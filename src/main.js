@@ -8,6 +8,7 @@ const github = require('./github');
 const git = require('./git');
 const scanner = require('./scanner');
 const apps = require('./apps');
+const updater = require('./updater');
 
 let win;
 let store;
@@ -370,6 +371,17 @@ const handlers = {
     return pick.canceled ? null : pick.filePaths[0] || null;
   },
 
+  // --- updates
+  async 'update:status'() {
+    return updater.status();
+  },
+  async 'update:check'() {
+    return updater.check();
+  },
+  async 'update:install'() {
+    updater.install();
+  },
+
   // --- shell
   async 'shell:folder'(p) {
     await shell.openPath(p);
@@ -424,6 +436,7 @@ app.whenReady().then(() => {
     win.webContents.send('store:error', `Não consegui salvar as configurações em ${store.file}: ${err.message}`);
   });
   createWindow();
+  updater.setup((s) => win?.webContents.send('update:state', s));
   apps.detect().catch(() => {});
 });
 

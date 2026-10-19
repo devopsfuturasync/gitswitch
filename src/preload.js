@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('api', {
   onFocus(fn) {
     ipcRenderer.on('window:focus', () => fn());
   },
+  onUpdate(fn) {
+    ipcRenderer.on('update:state', (_e, s) => fn(s));
+  },
   onStoreError(fn) {
     ipcRenderer.on('store:error', (_e, message) => fn(message));
   },

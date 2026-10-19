@@ -19,6 +19,8 @@ const S = {
   knownLogins: null,
   missing: [],
   apps: null,
+  update: null,
+  manualCheck: false,
 };
 
 const KIND_LETTER = { added: 'A', untracked: '+', modified: 'M', deleted: 'D', renamed: 'R', conflict: '!' };
@@ -163,6 +165,9 @@ function openAccountMenu() {
     el('div', { class: 'pop-list' }, items),
     el('label', { class: 'toggle' }, sync,
       el('span', { text: 'Trocar também no terminal (gh e nome/e-mail do git global)' })),
+    el('div', { class: 'toggle' },
+      el('span', { class: 'grow', text: updateLine() }),
+      S.update?.state === 'dev' ? null : el('button', { text: 'Procurar atualização', onclick: checkForUpdate })),
     el('div', { class: 'pop-foot' },
       el('button', { text: 'Adicionar conta', onclick: addAccount }),
       el('button', { text: 'Pastas das contas…', onclick: () => openFoldersModal() }),
@@ -1070,6 +1075,48 @@ function openAddAppModal() {
   name.focus();
 }
 
+// ---------- updates ----------
+function updateLine() {
+  const u = S.update;
+  if (!u) return 'GitSwitch';
+  const v = `GitSwitch ${u.version}`;
+  if (u.state === 'dev') return `${v} (desenvolvimento)`;
+  if (u.state === 'checking') return `${v} · procurando atualização…`;
+  if (u.state === 'downloading') return `${v} · baixando ${u.next} (${u.percent || 0}%)`;
+  if (u.state === 'ready') return `${v} · ${u.next} pronta para instalar`;
+  if (u.state === 'latest') return `${v} · versão mais nova`;
+  return v;
+}
+
+function onUpdate(u) {
+  S.update = u;
+  if (S.manualCheck && ['latest', 'error', 'downloading'].includes(u.state)) {
+    S.manualCheck = false;
+    if (u.state === 'latest') toast('Você já está na versão mais nova.');
+    else if (u.state === 'error') toast(`Não consegui procurar atualização: ${u.message}`, true);
+    else toast(`Baixando a versão ${u.next}…`);
+  }
+  const bar = $('updateHint');
+  bar.hidden = u.state !== 'ready';
+  if (u.state !== 'ready') return;
+  bar.replaceChildren(
+    el('span', { class: 'grow', text: `A versão ${u.next} do GitSwitch está pronta. Ela também é instalada quando você fechar o app.` }),
+    el('button', { class: 'primary', text: 'Reiniciar e atualizar', onclick: () => call('update:install') }),
+    el('button', { class: 'ghost', text: 'Depois', onclick: () => { bar.hidden = true; } }),
+  );
+}
+
+async function checkForUpdate() {
+  closePopovers();
+  S.manualCheck = true;
+  try {
+    onUpdate(await call('update:check'));
+  } catch (err) {
+    S.manualCheck = false;
+    toast(`Não consegui procurar atualização: ${err.message}`, true);
+  }
+}
+
 // ---------- popovers & modal ----------
 function closePopovers() {
   for (const p of document.querySelectorAll('.popover')) p.hidden = true;
@@ -1182,6 +1229,8 @@ function wire() {
 async function start() {
   wire();
   window.api.onStoreError((message) => toast(message, true));
+  window.api.onUpdate(onUpdate);
+  call('update:status').then(onUpdate).catch(() => {});
   await busy('Carregando contas…', loadAccounts);
   await loadRepos();
   await refresh();
