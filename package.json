@@ -1,7 +1,7 @@
 {
   "name": "gitswitch",
   "productName": "GitSwitch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cliente Git estilo GitHub Desktop com troca de conta do GitHub em um clique.",
   "author": "Danilo",
   "private": true,

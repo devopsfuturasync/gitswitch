@@ -35,10 +35,10 @@ async function profile(login) {
   const t = await token(login);
   let p;
   try {
-    const u = await github.api(t, '/user');
-    p = { login: u.login, id: u.id, name: u.name, email: u.email, avatarUrl: u.avatar_url };
+    const [u, orgs] = await Promise.all([github.api(t, '/user'), github.api(t, '/user/orgs').catch(() => [])]);
+    p = { login: u.login, id: u.id, name: u.name, email: u.email, avatarUrl: u.avatar_url, orgs: orgs.map((o) => o.login) };
   } catch {
-    p = { login, id: null, name: null, email: null, avatarUrl: null };
+    p = { login, id: null, name: null, email: null, avatarUrl: null, orgs: [] };
   }
   cache.set(login, { ...cache.get(login), profile: p });
   return p;

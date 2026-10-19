@@ -87,10 +87,18 @@ async function diff(repo, file, initial) {
   return stdout.slice(0, MAX_DIFF);
 }
 
-async function commit(repo, account, files, message, initial) {
+async function isMerging(repo) {
+  const { code } = await git(repo, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], null, { allowCodes: [0, 1] });
+  return code === 0;
+}
+
+async function commit(repo, account, files, message, initial, merging) {
   // Commit exactly the checked files: unstage everything, then add those.
-  if (initial) await git(repo, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '.']);
-  else await git(repo, ['reset', '-q']);
+  // During a merge nothing is unstaged, since that would drop the merge.
+  if (!merging) {
+    if (initial) await git(repo, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '.']);
+    else await git(repo, ['reset', '-q']);
+  }
   const paths = files.flatMap((f) => (f.orig ? [f.orig, f.path] : [f.path]));
   for (let i = 0; i < paths.length; i += 100) {
     await git(repo, ['add', '-A', '--', ...paths.slice(i, i + 100)]);
@@ -179,7 +187,74 @@ function init(dir) {
   return git(dir, ['init', '-b', 'main']);
 }
 
+// Settles a conflicted file with one side ('ours' = this folder, 'theirs' = GitHub).
+async function resolve(repo, file, side) {
+  await git(repo, ['checkout', `--${side}`, '--', file]);
+  await git(repo, ['add', '--', file]);
+}
+
+function abortMerge(repo) {
+  return git(repo, ['merge', '--abort']);
+}
+
+function sameRemote(a, b) {
+  const norm = (u) => u.trim().toLowerCase().replace(/\.git$/, '').replace(/\/$/, '').replace(/^git@github\.com:/, 'https://github.com/');
+  return norm(a) === norm(b);
+}
+
+// Connects a local folder to a GitHub repository without losing local files.
+// - folder without git history: adopts GitHub's history; local files that
+//   differ show up as changes, files only on GitHub are brought in.
+// - folder with its own history: merges GitHub's history into it.
+async function link(dir, url, account) {
+  let top = null;
+  try { top = await toplevel(dir); } catch { /* not a repository yet */ }
+  if (top && path.normalize(top).toLowerCase() !== path.normalize(dir).toLowerCase()) {
+    throw new Error(`Essa pasta fica dentro de outro repositório (${top}). Escolha a pasta principal.`);
+  }
+  if (!top) await init(dir);
+
+  const current = await remoteUrl(dir);
+  if (current && !sameRemote(current, url)) throw new Error(`Essa pasta já está ligada a outro repositório:\n${current}`);
+  if (!current) await git(dir, ['remote', 'add', 'origin', url]);
+  await git(dir, ['fetch', 'origin'], account);
+
+  let def = null;
+  try {
+    await git(dir, ['remote', 'set-head', 'origin', '--auto'], account);
+    const { stdout } = await git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    def = stdout.trim().replace(/^origin\//, '');
+  } catch { /* GitHub repo has no branches yet */ }
+  if (!def) return { result: 'empty' };
+
+  const { code } = await git(dir, ['rev-parse', '-q', '--verify', 'HEAD'], null, { allowCodes: [0, 1] });
+  if (code !== 0) {
+    await git(dir, ['symbolic-ref', 'HEAD', `refs/heads/${def}`]);
+    await git(dir, ['reset', '-q', '--mixed', `origin/${def}`]);
+    await git(dir, ['branch', '-u', `origin/${def}`]);
+    const { stdout } = await git(dir, ['ls-files', '--deleted', '-z']);
+    const missing = stdout.split('\0').filter(Boolean);
+    for (let i = 0; i < missing.length; i += 100) {
+      await git(dir, ['checkout', '--', ...missing.slice(i, i + 100)]);
+    }
+    return { result: 'adopted', branch: def };
+  }
+
+  const st = await status(dir);
+  if (st.files.length) throw new Error('Essa pasta tem alterações sem commit. Faça commit ou descarte antes de juntar.');
+  const branch = st.branch;
+  try {
+    await git(dir, ['merge', '--allow-unrelated-histories', '--no-edit', `origin/${def}`], account);
+  } catch (err) {
+    if (await isMerging(dir)) return { result: 'conflicts', branch };
+    throw err;
+  }
+  if (branch === def) await git(dir, ['branch', '-u', `origin/${def}`]);
+  return { result: 'merged', branch };
+}
+
 module.exports = {
   toplevel, status, diff, commit, discard, log, show, branches, checkout,
-  createBranch, remoteUrl, fetchAll, pull, push, clone, init,
+  createBranch, remoteUrl, fetchAll, pull, push, clone, init, isMerging,
+  resolve, abortMerge, link,
 };

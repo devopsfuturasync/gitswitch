@@ -29,13 +29,18 @@
     </button>
     <div class="spacer"></div>
     <div class="tb-actions" id="repoActions" hidden>
-      <button class="ghost" id="openFolder" title="Abrir no Explorer">Explorer</button>
-      <button class="ghost" id="openCode" title="Abrir no VS Code">VS Code</button>
+      <button class="ghost" id="folderBtn" title="Pasta do repositório">Pasta ▾</button>
+      <div class="split">
+        <button class="ghost" id="openBtn" title="Abrir o repositório">Abrir</button>
+        <button class="ghost caret" id="openMenuBtn" title="Escolher onde abrir">▾</button>
+      </div>
       <button class="ghost" id="openGithub" title="Abrir no GitHub">GitHub</button>
     </div>
   </header>
 
   <div class="banner" id="accountHint" hidden></div>
+  <div class="banner" id="repoHint" hidden></div>
+  <div class="banner warn" id="mergeHint" hidden></div>
 
   <div class="layout" id="workspace" hidden>
     <aside class="sidebar">
@@ -87,6 +92,8 @@
   <div class="popover" id="accountMenu" hidden></div>
   <div class="popover wide" id="repoMenu" hidden></div>
   <div class="popover wide" id="branchMenu" hidden></div>
+  <div class="popover wide" id="folderMenu" hidden></div>
+  <div class="popover" id="openMenu" hidden></div>
 
   <!-- modals -->
   <div class="modal-backdrop" id="modal" hidden>

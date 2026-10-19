@@ -7,12 +7,16 @@ const DEFAULTS = {
   activeAccount: null,
   cloneDir: null,
   identities: {},       // login -> { name, email } overrides for commits
+  accountDirs: {},      // login -> folder where that account's repos live
   syncGlobal: false,    // also switch gh + global git when the account changes
+  openWith: 'vscode',   // id of the app "Abrir em" uses by default
+  customApps: [],       // [{ id, name, kind: 'exe' | 'terminal', command, args }]
 };
 
 class Store {
-  constructor(dir) {
+  constructor(dir, onError) {
     this.file = path.join(dir, 'state.json');
+    this.onError = onError;
     try {
       this.data = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(this.file, 'utf8')) };
     } catch {
@@ -24,10 +28,17 @@ class Store {
     return this.data[key];
   }
 
+  // Writes to a temp file first so a failed write never leaves half a JSON.
   set(key, value) {
     this.data[key] = value;
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
+    const tmp = `${this.file}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+      fs.renameSync(tmp, this.file);
+    } catch (err) {
+      this.onError?.(err);
+    }
   }
 }
 
