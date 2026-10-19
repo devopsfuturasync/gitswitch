@@ -1,0 +1,14 @@
+{
+  "name": "gitswitch",
+  "productName": "GitSwitch",
+  "version": "0.1.0",
+  "description": "Cliente Git estilo GitHub Desktop com troca de conta do GitHub em um clique.",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "44.9.0"
+  }
+}

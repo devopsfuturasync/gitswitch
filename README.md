@@ -1,0 +1,20 @@
+# GitSwitch
+
+Cliente Git estilo GitHub Desktop em que você troca de conta do GitHub escolhendo no menu **Conta**, no topo.
+
+## Como funciona
+
+- **Contas**: o app lê as contas em que você entrou com o GitHub CLI (`gh auth login`). Para adicionar outra, use **Conta → Adicionar conta** e termine o login na janela que abrir.
+- **Push, pull, fetch e clone** usam o token da conta escolhida no topo, sem depender do que estiver salvo no Windows.
+- **Commits** saem com o nome e o e-mail da conta escolhida. O padrão é o perfil do GitHub ou o e-mail noreply; dá pra mudar em **Conta → Nome/e-mail…**.
+- **Trocar também no terminal** (opcional, no menu Conta): ao trocar de conta, roda `gh auth switch` e muda o `user.name`/`user.email` global do git e o usuário do Git Credential Manager.
+- Cada repositório guarda a última conta usada com ele. Se você abrir o repo com outra conta, aparece uma faixa sugerindo a troca.
+
+## Rodar
+
+```bash
+npm install
+npm start
+```
+
+Precisa de Git e do GitHub CLI (`gh`) instalados.
