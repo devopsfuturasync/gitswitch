@@ -232,6 +232,9 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 }
 
+// Matches build.appId so the Start menu shortcut and the taskbar group agree.
+app.setAppUserModelId('com.danilogiles.gitswitch');
+
 app.whenReady().then(() => {
   store = new Store(app.getPath('userData'));
   createWindow();

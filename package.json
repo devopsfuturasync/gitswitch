@@ -3,12 +3,41 @@
   "productName": "GitSwitch",
   "version": "0.1.0",
   "description": "Cliente Git estilo GitHub Desktop com troca de conta do GitHub em um clique.",
+  "author": "Danilo",
   "private": true,
   "main": "src/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "icon": "node build/make-icon.js",
+    "dist": "electron-builder --win nsis"
   },
   "devDependencies": {
-    "electron": "44.9.0"
+    "electron": "44.9.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.danilogiles.gitswitch",
+    "productName": "GitSwitch",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createStartMenuShortcut": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "GitSwitch",
+      "artifactName": "GitSwitch-Setup-${version}.${ext}"
+    }
   }
 }
