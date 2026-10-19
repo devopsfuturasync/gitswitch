@@ -30,3 +30,15 @@ npm run dist
 ```
 
 Gera `dist/GitSwitch-Setup-<versão>.exe`. Ele instala só para o seu usuário e cria atalhos no menu Iniciar e na área de trabalho. O instalador não é assinado, então o Windows SmartScreen pode avisar na primeira vez: clique em "Mais informações" e depois em "Executar assim mesmo". O ícone sai de `build/icon.png`, gerado por `npm run icon`.
+
+## Atualizações
+
+As cópias instaladas procuram versões novas nas [releases deste repositório](https://github.com/devopsfuturasync/gitswitch/releases): 5 segundos depois de abrir e depois a cada 4 horas. Quando acham uma, baixam em segundo plano e mostram **Reiniciar e atualizar**. Se você só fechar o app, a versão nova é instalada do mesmo jeito.
+
+Para publicar uma versão nova, aumente `version` no `package.json` e rode:
+
+```bash
+npm run release
+```
+
+O script gera o instalador e cria a release no GitHub, usando o login do GitHub CLI da conta dona do repositório (`devopsfuturasync`).
