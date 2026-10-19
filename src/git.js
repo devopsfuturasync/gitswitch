@@ -243,13 +243,14 @@ async function link(dir, url, account) {
   const st = await status(dir);
   if (st.files.length) throw new Error('Essa pasta tem alterações sem commit. Faça commit ou descarte antes de juntar.');
   const branch = st.branch;
+  // Track GitHub's branch up front, so Push works after conflicts are settled too.
+  if (branch === def) await git(dir, ['branch', '-u', `origin/${def}`]);
   try {
     await git(dir, ['merge', '--allow-unrelated-histories', '--no-edit', `origin/${def}`], account);
   } catch (err) {
     if (await isMerging(dir)) return { result: 'conflicts', branch };
     throw err;
   }
-  if (branch === def) await git(dir, ['branch', '-u', `origin/${def}`]);
   return { result: 'merged', branch };
 }
 
