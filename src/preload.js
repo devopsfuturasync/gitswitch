@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
       const err = new Error(res.error);
       err.detail = res.detail;
       err.kind = res.kind;
+      err.code = res.code;
       throw err;
     }
     return res.value;
@@ -22,6 +23,12 @@ contextBridge.exposeInMainWorld('api', {
   },
   onUpdate(fn) {
     ipcRenderer.on('update:state', (_e, s) => fn(s));
+  },
+  // state | unlockRequest | imported
+  onVault(fn) {
+    ipcRenderer.on('vault:state', (_e, v) => fn('state', v));
+    ipcRenderer.on('vault:unlockRequest', (_e, v) => fn('unlockRequest', v));
+    ipcRenderer.on('vault:imported', (_e, v) => fn('imported', v));
   },
   onStoreError(fn) {
     ipcRenderer.on('store:error', (_e, message) => fn(message));

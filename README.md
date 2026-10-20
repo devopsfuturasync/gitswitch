@@ -27,6 +27,10 @@ gitswitch gh -- pr create --fill     # GitHub CLI com o token da conta certa
 gitswitch help --json                # lista de comandos para máquinas
 ```
 
+### Segurança do login
+
+No Windows e no macOS, o GitHub CLI guarda os tokens no cofre do sistema, que é criptografado. No Linux sem chaveiro, ele grava em texto puro. O GitSwitch mostra onde está cada token em **Configurações → Segurança do login** e avisa quando algum está em texto puro. Para esses casos existe o **cofre do GitSwitch**, protegido por uma senha sua (scrypt + AES-256-GCM). Com o app aberto, o `gitswitch` e o servidor MCP pedem o token ao app, como o ssh-agent faz. Se o cofre estiver trancado, o app pede a senha. Detalhes e a comparação com o gh, o Git Credential Manager e o VS Code estão em [docs/SEGURANCA.md](docs/SEGURANCA.md).
+
 ### Servidor MCP
 
 O GitSwitch também é um servidor MCP: os apps de IA ganham as ferramentas `gitswitch_*` (contas, trocar de conta, status, git e gh com a conta certa, commit, push, pull request e checks) sem precisar de terminal. Para ligar, use **Configurações → Terminal e IA → Adicionar em todos**, ou rode `gitswitch mcp add`. Ele aparece no Claude Code, Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI e Antigravity que estiverem instalados. Antes de mudar a configuração de um app, o GitSwitch guarda uma cópia em `mcp-backups`, na pasta de dados dele, e só mexe na entrada `gitswitch`. O Claude Desktop precisa estar fechado, porque ele reescreve a configuração ao fechar. `gitswitch mcp status` mostra onde está ligado e `gitswitch mcp remove` tira.

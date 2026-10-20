@@ -35,7 +35,9 @@ async function adoptShellPath() {
   if (isWin) return;
   const shell = process.env.SHELL || (isMac ? '/bin/zsh' : '/bin/bash');
   try {
-    const { stdout } = await run(shell, ['-ilc', 'printf "__GS__%s__GS__" "$PATH"'], { env: { TERM: 'dumb' } });
+    // An interactive shell that can reach a terminal gets stopped by job
+    // control (SIGTTIN) and hangs; in its own session it has none.
+    const { stdout } = await run(shell, ['-ilc', 'printf "__GS__%s__GS__" "$PATH"'], { env: { TERM: 'dumb' }, detached: true, timeoutMs: 5000 });
     const m = stdout.match(/__GS__(.*)__GS__/s);
     if (!m) return;
     const merged = [...new Set([...m[1].split(':'), ...(process.env.PATH || '').split(':')].filter(Boolean))];

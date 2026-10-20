@@ -20,6 +20,8 @@ const scanner = require('./scanner');
 const apps = require('./apps');
 const install = require('./install');
 const mcpClients = require('./mcp-clients');
+const vault = require('./vault');
+const agent = require('./agent');
 const github = require('./github');
 const tools = require('./tools');
 const { switchAccount } = require('./switch');
@@ -46,6 +48,7 @@ const COMMANDS = {
   install: { usage: 'gitswitch install [--no-skill] [--mcp]', summary: _t('Coloca o gitswitch no PATH e instala a skill para agentes de IA') },
   pr: { usage: 'gitswitch pr [path]', summary: 'Pull request of the current branch, its checks, and the open PRs' },
   'pr-create': { usage: 'gitswitch pr-create --title "…" [--body "…"] [--base main] [--draft] [-C path]', summary: 'Pushes the branch if needed and opens a pull request as the right account' },
+  vault: { usage: 'gitswitch vault [status | unlock | lock]', summary: 'GitSwitch\'s encrypted token vault: where each account\'s token is stored, and unlock/lock it in the open app' },
   mcp: { usage: 'gitswitch mcp [status | add | remove] [--client id,id]', summary: 'Runs GitSwitch as an MCP server over stdio; status/add/remove manage it in AI apps (Claude Code, Codex, Cursor, VS Code…)' },
   help: { usage: _t('gitswitch help [comando]'), summary: _t('Esta ajuda (com --json, a lista de comandos para máquinas)') },
 };
@@ -113,9 +116,48 @@ function fail(err) {
 const progress = (p) => { if (!JSON_MODE && process.stderr.isTTY) process.stderr.write(`\r${p.text}\x1b[K`); };
 const endProgress = () => { if (!JSON_MODE && process.stderr.isTTY) process.stderr.write('\r\x1b[K'); };
 
+// Reads a password from the terminal without echoing it.
+function promptHidden(question) {
+  return new Promise((resolve, reject) => {
+    const input = process.stdin;
+    if (!input.isTTY) { reject(new CliError('A password is needed and there is no terminal to ask in.', 'auth')); return; }
+    process.stderr.write(question);
+    input.setRawMode(true);
+    input.resume();
+    input.setEncoding('utf8');
+    let value = '';
+    const done = (fn) => { input.setRawMode(false); input.pause(); input.removeListener('data', onData); process.stderr.write('\n'); fn(); };
+    const onData = (chunk) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') { done(() => resolve(value)); return; }
+        if (ch === '\u0003') { done(() => reject(new CliError('Cancelled.', 'usage'))); return; }
+        if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1);
+        else if (ch >= ' ') value += ch;
+      }
+    };
+    input.on('data', onData);
+  });
+}
+
+// Tokens of accounts kept in the vault: ask the open app (it shows its
+// password prompt when locked); with no app running, at a terminal, ask for
+// the password here and unlock just for this command.
+accounts.setVaultSource(async (login, { interactive = true } = {}) => {
+  if (vault.isUnlocked()) return vault.get(login);
+  const res = await agent.request({ op: 'token', login, wait: interactive });
+  if (res?.ok && res.token) return res.token;
+  if (res || !interactive || SINK || !process.stdin.isTTY) return null;
+  await vault.unlock(await promptHidden(`GitSwitch vault password (for ${login}): `)).catch((err) => {
+    throw new CliError(err.code === 'bad-password' ? 'Wrong password.' : err.message, 'auth');
+  });
+  return vault.get(login);
+});
+
 // ---------- state ----------
 const store = new Store();
-require('./platform').adoptShellPath(); // harmless when already in a shell
+// Started by a GUI app (an MCP client, say) the PATH can lack the user's
+// additions; from a terminal it already has them.
+if (!process.stdin.isTTY) require('./platform').adoptShellPath();
 tools.setPreference(store.get('settings')?.tools);
 const overrides = () => store.get('identities');
 const samePath = (a, b) => Boolean(a && b) && path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
@@ -195,7 +237,7 @@ const run = {
     print({
       accounts: list.map((a) => ({
         login: a.login, name: a.name, active: a.active, ghActive: a.ghActive, orgs: a.orgs || [],
-        identity: a.identity, folder: a.folder,
+        identity: a.identity, folder: a.folder, storage: a.storage, ...(a.locked ? { locked: true } : {}),
       })),
     }, (d) => d.accounts.map((a) => `${a.active ? '*' : ' '} ${a.login.padEnd(20)} ${a.identity.name} <${a.identity.email}>${a.folder ? `  ${a.folder}` : ''}`).join('\n'));
   },
@@ -436,6 +478,39 @@ const run = {
     print({ account: creds.login, pr: pull }, (d) => `#${d.pr.number} ${d.pr.url}`);
   },
 
+  async vault({ pos }) {
+    const action = pos[0] || 'status';
+    if (action === 'status') {
+      const app = await agent.request({ op: 'status' }, 5000);
+      const list = await accounts.list(overrides());
+      print({
+        exists: vault.exists(), file: vault.status().file,
+        app: app?.ok ? { running: true, unlocked: app.unlocked } : { running: false },
+        accounts: list.map((a) => ({ login: a.login, storage: a.storage, ...(a.ghStorage ? { ghStorage: a.ghStorage } : {}) })),
+      }, (d) => [
+        `vault: ${d.exists ? d.file : 'not created'}${d.exists ? ` (${d.app.running ? (d.app.unlocked ? 'unlocked in the app' : 'locked') : 'app not running'})` : ''}`,
+        ...d.accounts.map((a) => `  ${a.login.padEnd(20)} ${STORAGE_LABEL[a.storage] || a.storage}`),
+      ].join('\n'));
+      return;
+    }
+    if (action === 'lock') {
+      const res = await agent.request({ op: 'lock' }, 5000);
+      if (!res?.ok) throw new CliError('GitSwitch is not running.', 'notfound');
+      print({ locked: true }, 'vault locked');
+      return;
+    }
+    if (action === 'unlock') {
+      if (!vault.exists()) throw new CliError('There is no vault yet. Create it in GitSwitch: Settings > Login security.', 'notfound');
+      const password = await promptHidden('GitSwitch vault password: ');
+      const res = await agent.request({ op: 'unlock', password }, 30_000);
+      if (!res) throw new CliError('GitSwitch is not running. Open it, or just run your command: it will ask for the password.', 'notfound');
+      if (!res.ok) throw new CliError(res.error === 'bad-password' ? 'Wrong password.' : (res.message || res.error), 'auth');
+      print({ unlocked: true }, 'vault unlocked in GitSwitch');
+      return;
+    }
+    throw new CliError(`Unknown action: ${action} (use status, unlock or lock)`);
+  },
+
   async mcp({ pos, opts }) {
     const action = pos[0];
     if (!action) { await require('./mcp').serve({ run, capture, version: VERSION }); return; }
@@ -510,6 +585,10 @@ async function passthrough(tool, rest, opts, build) {
 const MCP_RESULT = {
   installed: 'MCP server added', removed: 'MCP server removed', 'not-found': 'not installed on this computer',
   'close-app': 'close the app and try again (it rewrites its config when it quits)', unreadable: 'config has comments or is invalid JSON; left unchanged',
+};
+const STORAGE_LABEL = {
+  keyring: 'system keyring (encrypted)', vault: 'GitSwitch vault (encrypted)', plaintext: 'PLAIN TEXT in gh hosts.yml',
+  env: 'environment variable', unknown: 'unknown',
 };
 const mcpLine = (r) => `${r.name}: ${r.error || MCP_RESULT[r.result] || r.result}${r.result === 'installed' || r.result === 'removed' ? ` (${r.file})` : ''}`;
 

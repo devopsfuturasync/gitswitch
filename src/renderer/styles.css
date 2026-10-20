@@ -639,6 +639,7 @@ pre.detail {
 .set-buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .set-buttons .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcp-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.warn-text { color: var(--danger); font-weight: 600; }
 .set-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 select {
   font: inherit;

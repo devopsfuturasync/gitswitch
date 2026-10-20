@@ -14,7 +14,8 @@ Use these tools instead of plain git/gh for anything that talks to GitHub or cre
 - gitswitch_whoami before pushing, to see which account will be used and why.
 - gitswitch_use to switch accounts; its "repo" is the repository last used with that account.
 - gitswitch_git / gitswitch_gh run any git or GitHub CLI command authenticated as the right account.
-Paths are absolute. Every result is JSON with "ok"; failures add "error" (plain sentence) and "kind".`;
+Paths are absolute. Every result is JSON with "ok"; failures add "error" (plain sentence) and "kind".
+Some accounts keep their token in GitSwitch's encrypted vault. When it is locked, GitSwitch shows the user a password prompt and the call waits; if it still fails with kind "auth", ask the user to unlock GitSwitch, then retry. Never ask for the password yourself.`;
 
 const pathProp = { type: 'string', description: 'Absolute path of the repository (or any folder inside it).' };
 const asProp = { type: 'string', description: 'GitHub login to use instead of the automatic choice.' };
@@ -133,6 +134,13 @@ const TOOLS = {
     schema: { type: 'object', properties: { login: { type: 'string' }, path: { type: 'string' } }, required: ['login'] },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     toArgs: (i) => ({ pos: [i.login, i.path].filter(Boolean) }),
+  },
+  gitswitch_vault_status: {
+    command: 'vault', title: 'Where tokens are stored',
+    description: 'For each account, where its token is stored: system keyring (encrypted), GitSwitch vault (encrypted) or plain text, and whether the vault is unlocked in the open app.',
+    schema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    toArgs: () => ({ pos: ['status'] }),
   },
   gitswitch_detect: {
     command: 'detect', title: 'Find repositories on disk',

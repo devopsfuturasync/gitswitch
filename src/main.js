@@ -13,6 +13,8 @@ const apps = require('./apps');
 const updater = require('./updater');
 const install = require('./install');
 const mcpClients = require('./mcp-clients');
+const vault = require('./vault');
+const agent = require('./agent');
 const ai = require('./ai');
 const scannerParse = require('./scanner').parseGithub;
 const { switchAccount, rememberRepoForAccount } = require('./switch');
@@ -40,6 +42,8 @@ const DEFAULT_SETTINGS = {
   ai: { provider: 'claude', model: '', language: 'en' },
   zoom: 0,
   notifyChecks: true,
+  vaultLockMinutes: 0,      // lock the vault after this long unused; 0 = when the app quits
+  newAccountsInVault: true, // with a vault, new logins go straight into it
 };
 const settings = () => ({ ...DEFAULT_SETTINGS, ...store.get('settings') });
 
@@ -96,6 +100,111 @@ function addRepo(repoPath, account, { select = true } = {}) {
 function removeRepo(repoPath) {
   store.set('repos', store.get('repos').filter((r) => !samePath(r.path, repoPath)));
   if (samePath(store.get('selectedRepo'), repoPath)) store.set('selectedRepo', store.get('repos')[0]?.path ?? null);
+}
+
+// ---------- vault ----------
+// The vault is unlocked here, in the main process. The renderer only sends
+// the password; tokens never reach it. Other processes (gitswitch command,
+// MCP server) get tokens through the agent socket while it is unlocked.
+let agentServer = null;
+let lockTimer = null;
+const unlockWaiters = [];
+
+const vaultState = () => ({ ...vault.status(), lockMinutes: settings().vaultLockMinutes });
+const sendVaultState = () => win?.webContents.send('vault:state', vaultState());
+
+function lockVault() {
+  clearTimeout(lockTimer);
+  vault.lock();
+  accounts.clearCache();
+  sendVaultState();
+}
+
+// Auto-lock counts from the last time a token was used.
+function touchVault() {
+  clearTimeout(lockTimer);
+  const minutes = settings().vaultLockMinutes;
+  if (minutes && vault.isUnlocked()) lockTimer = setTimeout(lockVault, minutes * 60_000);
+}
+
+function settleUnlock(ok) {
+  for (const w of unlockWaiters.splice(0)) { clearTimeout(w.timer); w.resolve(ok); }
+}
+
+// Brings the window up asking for the password. Resolves true once the user
+// unlocks, false if they cancel or don't answer in two minutes.
+function requestUnlock(login, from) {
+  if (vault.isUnlocked()) return Promise.resolve(true);
+  if (!win) return Promise.resolve(false);
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  win.webContents.send('vault:unlockRequest', { login, from });
+  return new Promise((resolve) => {
+    const w = { resolve };
+    w.timer = setTimeout(() => { unlockWaiters.splice(unlockWaiters.indexOf(w), 1); resolve(false); }, 120_000);
+    unlockWaiters.push(w);
+  });
+}
+
+accounts.setVaultSource(async (login, { interactive } = {}) => {
+  if (!vault.isUnlocked() && interactive) await requestUnlock(login, 'app');
+  if (!vault.isUnlocked()) return null;
+  touchVault();
+  return vault.get(login);
+});
+
+function startAgent() {
+  if (agentServer || !vault.exists()) return;
+  agentServer = agent.serve(async (req) => {
+    if (req.op === 'status') return { unlocked: vault.isUnlocked(), logins: vault.logins() };
+    if (req.op === 'lock') { lockVault(); return {}; }
+    if (req.op === 'unlock') {
+      await handlers['vault:unlock'](req.password);
+      return { unlocked: true };
+    }
+    if (req.op === 'token') {
+      if (!vault.logins().includes(req.login)) return { error: 'unknown' };
+      // wait: false (just listing accounts) never brings up the password prompt.
+      if (!vault.isUnlocked() && (req.wait === false || !(await requestUnlock(req.login, 'cli')))) return { error: 'locked' };
+      touchVault();
+      return { token: vault.get(req.login) };
+    }
+    return { error: 'unknown-op' };
+  });
+}
+
+function stopAgent() {
+  agentServer?.close();
+  agentServer = null;
+}
+
+// New login straight into the vault: gh logs in under a private, temporary
+// GH_CONFIG_DIR (in memory on Linux, /run/user/<uid>), the token is moved
+// into the vault as soon as it appears, and the folder is deleted.
+async function openVaultLogin() {
+  const base = !platform.isWin && process.env.XDG_RUNTIME_DIR ? process.env.XDG_RUNTIME_DIR : app.getPath('userData');
+  const dir = await fs.mkdtemp(path.join(base, 'gitswitch-login-'));
+  const gh = tools.bin('gh');
+  const args = `auth login --hostname ${accounts.HOST} --web --git-protocol https --insecure-storage`;
+  await platform.openTerminal(platform.home, platform.isWin
+    ? `set "GH_CONFIG_DIR=${dir}" && "${gh}" ${args}`
+    : `GH_CONFIG_DIR=${platform.shQuote(dir)} ${platform.shQuote(gh)} ${args}`);
+  const started = Date.now();
+  const cleanup = () => fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  const tick = async () => {
+    try {
+      const added = vault.isUnlocked() ? await accounts.importFrom(dir) : [];
+      if (added.length) {
+        await cleanup();
+        win?.webContents.send('vault:imported', added);
+        return;
+      }
+    } catch { /* not logged in yet */ }
+    if (Date.now() - started > 15 * 60_000) { await cleanup(); return; }
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 2000);
 }
 
 // Opens a separate console so the user can finish the browser login there.
@@ -175,7 +284,64 @@ const handlers = {
     return { login, repo };
   },
   async 'accounts:add'() {
-    await openLoginConsole();
+    if (vault.isUnlocked() && settings().newAccountsInVault) await openVaultLogin();
+    else await openLoginConsole();
+    return { vault: vault.isUnlocked() && settings().newAccountsInVault };
+  },
+
+  // --- vault (see src/vault.js); the password comes from the renderer only to be used here
+  async 'vault:status'() {
+    return vaultState();
+  },
+  async 'vault:create'(password) {
+    await vault.create(password);
+    startAgent();
+    touchVault();
+    sendVaultState();
+    return vaultState();
+  },
+  async 'vault:unlock'(password) {
+    await vault.unlock(password);
+    accounts.clearCache();
+    settleUnlock(true);
+    touchVault();
+    sendVaultState();
+    return vaultState();
+  },
+  async 'vault:cancelUnlock'() {
+    settleUnlock(false);
+  },
+  async 'vault:lock'() {
+    lockVault();
+    return vaultState();
+  },
+  async 'vault:changePassword'(oldPassword, newPassword) {
+    await vault.changePassword(oldPassword, newPassword);
+    return vaultState();
+  },
+  async 'vault:destroy'() {
+    if (await ask('question', _t('Apagar o cofre vazio?'), '', [_t('Apagar'), _t('Cancelar')]) !== 0) return vaultState();
+    vault.destroy();
+    stopAgent();
+    sendVaultState();
+    return vaultState();
+  },
+  async 'vault:moveIn'(login) {
+    await accounts.moveToVault(login);
+    return vaultState();
+  },
+  async 'vault:moveOut'(login) {
+    const detail = platform.isWin || platform.isMac
+      ? _t('O GitHub CLI guarda o token no cofre do sistema.')
+      : _t('Sem um chaveiro do sistema (GNOME Keyring, KWallet, KeePassXC), o GitHub CLI guarda o token em texto puro.');
+    if (await ask('question', _t('Devolver @{0} ao GitHub CLI?', login), detail, [_t('Devolver'), _t('Cancelar')]) !== 0) return null;
+    await accounts.moveToGh(login);
+    return vaultState();
+  },
+  async 'vault:setLockMinutes'(minutes) {
+    store.set('settings', { ...settings(), vaultLockMinutes: Number(minutes) || 0 });
+    touchVault();
+    return vaultState();
   },
   async 'accounts:reload'() {
     accounts.clearCache();
@@ -693,7 +859,7 @@ for (const [name, fn] of Object.entries(handlers)) {
     try {
       return { ok: true, value: await fn(...args) };
     } catch (err) {
-      return { ok: false, error: err.message, detail: err.detail, kind: err.kind };
+      return { ok: false, error: err.message, detail: err.detail, kind: err.kind, code: err.code };
     }
   });
 }
@@ -756,9 +922,11 @@ app.whenReady().then(async () => {
   applyLanguage();
   createWindow();
   applySettings();
+  startAgent();
   updater.setup((s) => win?.webContents.send('update:state', s));
   apps.detect().catch(() => {});
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit', () => { stopAgent(); vault.lock(); });
 app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });

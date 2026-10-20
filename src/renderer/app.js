@@ -138,6 +138,7 @@ async function loadAccounts() {
   S.active = res.active;
   S.syncGlobal = res.syncGlobal;
   renderAccount();
+  renderSecurityHint();
   fillCoauthorSuggestions();
 }
 
@@ -198,7 +199,8 @@ function openAccountMenu() {
   el('span', { class: 'grow' },
     el('span', { text: a.name || a.login }),
     el('span', { class: 'muted', text: `@${a.login} · ${a.identity.email}` }),
-    el('span', { class: 'folder-line', text: a.folder ? `📁 ${a.folder}` : '📁 sem pasta definida' })),
+    el('span', { class: 'folder-line', text: a.folder ? `📁 ${a.folder}` : `📁 ${_t('sem pasta definida')}` })),
+  a.locked ? el('span', { class: 'tag', title: _t('O token desta conta está no cofre do GitSwitch, que está trancado.'), text: `🔒 ${_t('trancada')}` }) : null,
   a.ghActive ? el('span', { class: 'tag', title: _t('Conta ativa no gh do terminal'), text: _t('terminal') }) : null));
 
   const sync = el('input', { type: 'checkbox', id: 'syncGlobal' });
@@ -370,10 +372,12 @@ function openImportModal(focusLogin = null) {
 
 async function addAccount() {
   closePopovers();
-  await call('accounts:add');
+  const res = await call('accounts:add');
   S.awaitingLogin = true;
   S.knownLogins = S.accounts.map((a) => a.login);
-  toast(_t('Termine o login na janela que abriu. Quando voltar para cá, as contas são recarregadas.'));
+  toast(res?.vault
+    ? _t('Termine o login na janela que abriu. O token vai direto para o cofre do GitSwitch, sem passar pelo GitHub CLI.')
+    : _t('Termine o login na janela que abriu. Quando voltar para cá, as contas são recarregadas.'));
 }
 
 async function reloadAccounts() {
@@ -2218,6 +2222,195 @@ async function changeMcp(add, ids) {
   renderMcpList();
 }
 
+// ---------- login security (token storage and the vault) ----------
+const STORAGE_TEXT = {
+  keyring: () => _t('cofre do sistema (criptografado)'),
+  vault: () => _t('cofre do GitSwitch (criptografado)'),
+  plaintext: () => _t('texto puro no disco (hosts.yml do GitHub CLI)'),
+  env: () => _t('variável de ambiente'),
+  unknown: () => _t('desconhecido'),
+};
+
+function vaultError(err) {
+  if (err.code === 'bad-password') return _t('Senha errada.');
+  if (err.code === 'weak') return _t('A senha precisa ter pelo menos {0} caracteres.', 8);
+  if (err.code === 'not-empty') return _t('Tire as contas do cofre antes de apagá-lo.');
+  if (err.code === 'locked') return _t('O cofre está trancado.');
+  return err.message;
+}
+
+// Runs a vault call, turning its error codes into readable text.
+async function vaultCall(name, ...args) {
+  try {
+    return await call(name, ...args);
+  } catch (err) {
+    throw new Error(vaultError(err));
+  }
+}
+
+async function loadVault() {
+  S.vault = await call('vault:status').catch(() => null);
+  return S.vault;
+}
+
+function passwordInput(placeholder) {
+  return el('input', { type: 'password', autocomplete: 'off', placeholder: placeholder || '' });
+}
+
+// Resolves true once unlocked, false if the user cancels.
+function openUnlockModal({ login, from } = {}) {
+  return new Promise((resolve) => {
+    const pw = passwordInput();
+    const why = from === 'cli'
+      ? _t('Um programa (terminal ou IA) quer usar a conta @{0}. Digite a senha do cofre do GitSwitch para liberar.', login)
+      : login
+        ? _t('Digite a senha do cofre do GitSwitch para usar a conta @{0}.', login)
+        : _t('Digite a senha do cofre do GitSwitch para usar {0}.', (S.vault?.logins || []).map((l) => `@${l}`).join(', '));
+    let unlocked = false;
+    openModal(_t('Destrancar o cofre'), [
+      el('p', { class: 'muted', text: why }),
+      el('label', {}, _t('Senha do cofre'), pw),
+    ], _t('Destrancar'), async () => {
+      S.vault = await vaultCall('vault:unlock', pw.value);
+      unlocked = true;
+    });
+    S.onModalClose = () => {
+      if (!unlocked) call('vault:cancelUnlock').catch(() => {});
+      resolve(unlocked);
+    };
+    setTimeout(() => pw.focus(), 30);
+  });
+}
+
+async function ensureUnlocked() {
+  if (!S.vault?.exists) return false;
+  if (S.vault.unlocked) return true;
+  return openUnlockModal();
+}
+
+// Creates the vault; then moves the given accounts into it.
+function openCreateVaultModal(moveLogins = []) {
+  const pw = passwordInput();
+  const pw2 = passwordInput();
+  openModal(_t('Criar o cofre do GitSwitch'), [
+    el('p', { class: 'muted', text: _t('Os tokens ficam criptografados com uma senha só sua (scrypt + AES-256-GCM). Sem a senha, nem o GitSwitch abre o cofre. O GitSwitch pede a senha ao abrir e quando um programa precisar de uma conta trancada.') }),
+    el('p', { class: 'muted', text: _t('Se esquecer a senha, não há como recuperar: basta entrar de novo nas contas (Adicionar conta).') }),
+    el('label', {}, _t('Senha (mínimo {0} caracteres)', 8), pw),
+    el('label', {}, _t('Repita a senha'), pw2),
+    moveLogins.length ? el('p', { class: 'muted', text: _t('Depois de criar, vou mover para o cofre: {0}.', moveLogins.map((l) => `@${l}`).join(', ')) }) : null,
+  ], _t('Criar cofre'), async () => {
+    if (pw.value !== pw2.value) throw new Error(_t('As senhas não são iguais.'));
+    S.vault = await vaultCall('vault:create', pw.value);
+    for (const login of moveLogins) S.vault = await vaultCall('vault:moveIn', login);
+    await loadAccounts();
+    renderSecurityPanel();
+    toast(moveLogins.length ? _t('Cofre criado. {0} agora ficam só no cofre.', moveLogins.map((l) => `@${l}`).join(', ')) : _t('Cofre criado.'));
+  });
+  setTimeout(() => pw.focus(), 30);
+}
+
+async function moveToVault(logins) {
+  await loadVault();
+  if (!S.vault?.exists) { openCreateVaultModal(logins); return; }
+  if (!(await ensureUnlocked())) return;
+  const ok = await busy(_t('Movendo para o cofre…'), async () => {
+    for (const login of logins) await vaultCall('vault:moveIn', login);
+    return true;
+  });
+  if (!ok) return;
+  await loadVault();
+  await loadAccounts();
+  renderSecurityPanel();
+  toast(_t('{0} agora ficam só no cofre do GitSwitch. O comando gh deixa de ver essas contas; use gitswitch gh.', logins.map((l) => `@${l}`).join(', ')));
+}
+
+async function moveToGh(login) {
+  if (!(await ensureUnlocked())) return;
+  const ok = await busy(_t('Devolvendo ao GitHub CLI…'), () => vaultCall('vault:moveOut', login));
+  if (!ok) return; // cancelled in the dialog, or failed
+  await loadVault();
+  await loadAccounts();
+  renderSecurityPanel();
+}
+
+function openChangePasswordModal() {
+  const old = passwordInput();
+  const pw = passwordInput();
+  const pw2 = passwordInput();
+  openModal(_t('Trocar a senha do cofre'), [
+    el('label', {}, _t('Senha atual'), old),
+    el('label', {}, _t('Senha nova (mínimo {0} caracteres)', 8), pw),
+    el('label', {}, _t('Repita a senha nova'), pw2),
+  ], _t('Trocar senha'), async () => {
+    if (pw.value !== pw2.value) throw new Error(_t('As senhas não são iguais.'));
+    S.vault = await vaultCall('vault:changePassword', old.value, pw.value);
+    toast(_t('Senha do cofre trocada.'));
+  });
+}
+
+function renderSecurityHint() {
+  const bar = $('securityHint');
+  if (!bar) return;
+  const plain = (S.accounts || []).filter((a) => a.storage === 'plaintext').map((a) => a.login);
+  const locked = (S.accounts || []).filter((a) => a.locked).map((a) => a.login);
+  const show = !S.securityDismissed && (plain.length || locked.length);
+  bar.hidden = !show;
+  if (!show) return;
+  const names = (l) => l.map((x) => `@${x}`).join(', ');
+  bar.replaceChildren(...(plain.length
+    ? [
+      el('span', { class: 'grow', text: _t('O token de {0} está salvo em texto puro no disco: qualquer programa ou pessoa com acesso aos seus arquivos pode lê-lo.', names(plain)) }),
+      el('button', { class: 'primary', text: _t('Proteger com o cofre'), onclick: () => moveToVault(plain) }),
+    ]
+    : [
+      el('span', { class: 'grow', text: _t('O cofre do GitSwitch está trancado: {0} ficam sem acesso até você destrancar.', names(locked)) }),
+      el('button', { class: 'primary', text: _t('Destrancar'), onclick: async () => { if (await openUnlockModal()) await loadAccounts(); } }),
+    ]),
+  el('button', { class: 'ghost', text: _t('Agora não'), onclick: () => { S.securityDismissed = true; bar.hidden = true; } }));
+}
+
+// The "Login security" block in Settings; re-rendered after every change.
+function renderSecurityPanel() {
+  const node = $('securityPanel');
+  if (!node) return;
+  const v = S.vault || {};
+  const rows = (S.accounts || []).map((a) => el('div', { class: 'set-buttons mcp-row' },
+    el('span', { class: 'grow' }, el('span', { text: `@${a.login}` }), ' ',
+      el('small', { class: a.storage === 'plaintext' || a.storage === 'env' ? 'warn-text' : 'muted', text: (STORAGE_TEXT[a.storage] || STORAGE_TEXT.unknown)() })),
+    a.storage === 'vault'
+      ? el('button', { type: 'button', text: _t('Devolver ao GitHub CLI'), onclick: () => moveToGh(a.login) })
+      : a.storage === 'env' ? null
+        : el('button', { type: 'button', text: _t('Mover para o cofre'), onclick: () => moveToVault([a.login]) })));
+  const state = !v.exists ? _t('não criado') : v.unlocked ? _t('destrancado') : _t('trancado');
+  node.replaceChildren(
+    el('div', { class: 'mcp-list' }, rows),
+    el('div', { class: 'set-buttons' },
+      el('span', { class: 'grow muted', text: _t('Cofre do GitSwitch: {0}', state) }),
+      !v.exists ? el('button', { type: 'button', text: _t('Criar cofre'), onclick: () => openCreateVaultModal() }) : null,
+      v.exists && !v.unlocked ? el('button', { type: 'button', text: _t('Destrancar'), onclick: async () => { if (await openUnlockModal()) { await loadAccounts(); renderSecurityPanel(); } } }) : null,
+      v.exists && v.unlocked ? el('button', { type: 'button', text: _t('Trancar agora'), onclick: async () => { S.vault = await call('vault:lock'); await loadAccounts(); renderSecurityPanel(); } }) : null,
+      v.exists ? el('button', { type: 'button', text: _t('Trocar senha'), onclick: openChangePasswordModal }) : null,
+      v.exists && !v.logins?.length ? el('button', { type: 'button', text: _t('Apagar cofre'), onclick: async () => {
+        S.vault = await vaultCall('vault:destroy').catch((err) => { toast(err.message, true); return S.vault; });
+        renderSecurityPanel();
+      } }) : null));
+}
+
+async function onVaultEvent(kind, value) {
+  if (kind === 'state') {
+    S.vault = value;
+    renderSecurityPanel();
+    if (!value.unlocked) await loadAccounts().catch(() => {});
+  } else if (kind === 'unlockRequest') {
+    if (await openUnlockModal(value)) await loadAccounts().catch(() => {});
+  } else if (kind === 'imported') {
+    await loadVault();
+    await loadAccounts();
+    renderSecurityPanel();
+    toast(_t('{0} entrou direto no cofre do GitSwitch.', value.map((l) => `@${l}`).join(', ')));
+  }
+}
+
 async function openSettings() {
   closePopovers();
   S.settings = await call('settings:get');
@@ -2247,6 +2440,12 @@ async function openSettings() {
       el('label', { class: 'set-row' }, sync, el('span', { class: 'grow' },
         el('span', { text: _t('Trocar também no terminal') }),
         el('small', { text: _t('Ao trocar de conta, roda gh auth switch e muda o nome/e-mail do Git global.') })))),
+    section(_t('Segurança do login'),
+      el('p', { class: 'hint', text: _t('Onde fica o token de cada conta. O cofre do sistema (Gerenciador de Credenciais do Windows, Keychain do macOS, GNOME Keyring/KWallet no Linux) já é criptografado. Sem ele, o GitHub CLI grava o token em texto puro; aí use o cofre do GitSwitch, protegido por uma senha sua.') }),
+      el('div', { id: 'securityPanel' }, el('span', { class: 'muted', text: '…' })),
+      selectRow(_t('Trancar o cofre sozinho'), 'vaultLockMinutes',
+        [[0, _t('Só quando fechar o GitSwitch')], [15, _t('Depois de 15 minutos sem uso')], [60, _t('Depois de 1 hora sem uso')], [240, _t('Depois de 4 horas sem uso')]], Number),
+      checkRow(_t('Com o cofre criado, contas novas vão direto para ele'), 'newAccountsInVault', _t('O login acontece numa pasta temporária e o token passa para o cofre assim que aparece.'))),
     section(_t('Git global'),
       el('p', { class: 'hint', text: _t('Usado por outros programas e pelo terminal. Os commits feitos no GitSwitch usam o nome e o e-mail da conta escolhida.') }),
       el('div', { class: 'set-grid' }, el('label', {}, _t('Nome'), gName), el('label', {}, 'E-mail', gEmail)),
@@ -2315,6 +2514,7 @@ async function openSettings() {
   ], _t('Fechar'), async () => {}, { cancel: false, wide: true });
   renderCliState();
   renderMcpList();
+  loadVault().then(renderSecurityPanel);
 }
 
 // Background fetch, like GitHub Desktop, so ahead/behind stays current.
@@ -2356,6 +2556,10 @@ async function start() {
   window.api.onStoreError((message) => toast(message, true));
   window.api.onUpdate(onUpdate);
   call('update:status').then(onUpdate).catch(() => {});
+  window.api.onVault(onVaultEvent);
+  await loadVault();
+  // Vault accounts need the password before anything can use them.
+  if (S.vault?.exists && !S.vault.unlocked && S.vault.logins.length) await openUnlockModal();
   await busy(_t('Carregando contas…'), loadAccounts);
   await loadRepos();
   await refresh();

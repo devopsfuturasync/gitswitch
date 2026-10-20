@@ -45,12 +45,17 @@ If your tools include `gitswitch_*` (the GitSwitch MCP server), use them: they r
 | `gitswitch detect [--add] --json` | Find repos on disk per account; `--add` adds the missing ones |
 | `gitswitch pr [path] --json` | The branch's pull request, its checks (CI) state, and the other open PRs |
 | `gitswitch pr-create --title "…" [--body "…"] [--base main] [--draft]` | Push the branch if needed and open a pull request as the right account |
+| `gitswitch vault [status \| unlock \| lock]` | Where each token is stored; unlock or lock the vault in the open app |
 | `gitswitch mcp [status \| add \| remove] [--client id,id]` | No argument: run the MCP server on stdio. `add`/`remove`: register it in Claude Code, Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Antigravity |
 | `gitswitch help [command] --json` | Machine-readable list of commands and options |
 
 ## Switching accounts
 
 When the user asks to work as another account, run `gitswitch use <login> --json`. The reply's `repo` is the repository last used with that account (or `null`); `cd` there before continuing. Pass `--keep-repo` to switch the account for the repository you are already in. The GitSwitch app picks up the change when its window is focused.
+
+## Locked vault
+
+An account can keep its token in GitSwitch's encrypted vault (`gitswitch vault status --json` shows where each token is stored). When the vault is locked, GitSwitch asks the user for the password and the command waits. If it still fails with `kind: "auth"` and says the vault is locked, ask the user to unlock GitSwitch, then retry. Never ask the user for the password yourself, and never try to read the vault file.
 
 ## Language
 
