@@ -45,7 +45,7 @@
         "provider": "github",
         "owner": "devopsfuturasync",
         "repo": "gitswitch",
-        "releaseType": "release"
+        "releaseType": "draft"
       }
     ],
     "asarUnpack": [
