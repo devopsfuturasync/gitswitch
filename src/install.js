@@ -29,8 +29,17 @@ function cliStatus() {
 // adds their folder to the user PATH. New terminals pick it up.
 async function installCli() {
   fs.mkdirSync(BIN, { recursive: true });
-  fs.writeFileSync(path.join(BIN, 'gitswitch.cmd'), `@echo off\r\nnode "${CLI}" %*\r\n`);
-  fs.writeFileSync(path.join(BIN, 'gitswitch'), `#!/bin/sh\nexec node "${CLI.replaceAll('\\', '/')}" "$@"\n`);
+  // From the installed app, run through GitSwitch.exe in Node mode so no
+  // Node.js install is needed (GitHub Desktop's github.bat does the same).
+  // A dev checkout falls back to the `node` on PATH.
+  const exe = process.versions.electron ? process.execPath : null;
+  const unix = (p) => p.replaceAll('\\', '/');
+  fs.writeFileSync(path.join(BIN, 'gitswitch.cmd'), exe
+    ? `@echo off\r\nsetlocal\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${exe}" "${CLI}" %*\r\nexit /b %ERRORLEVEL%\r\n`
+    : `@echo off\r\nnode "${CLI}" %*\r\n`);
+  fs.writeFileSync(path.join(BIN, 'gitswitch'), exe
+    ? `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${unix(exe)}" "${unix(CLI)}" "$@"\n`
+    : `#!/bin/sh\nexec node "${unix(CLI)}" "$@"\n`);
   const script = [
     "$d = $env:GITSWITCH_BIN",
     "$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($null -eq $p) { $p = '' }",

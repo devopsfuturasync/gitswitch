@@ -62,3 +62,22 @@ Legenda: ✅ tem · 🟡 parcial · ⬜ ainda não
 - Descartar: o arquivo modificado vai para a Lixeira antes de voltar à versão do commit.
 - Stash, desfazer commit, emendar e reverter: testados com Git real e pela interface.
 - Credenciais: repositório privado da `devopsfuturasync` buscado com o token dela (ok), com o da `danilogiles` (recusado: "não encontrado") e com um token inválido (recusado: "acesso recusado"). Isso mostra que só a credencial da conta escolhida é usada.
+
+## Análise do app distribuído com REA (GitHub Desktop 3.6.6 instalado)
+
+Feita com a skill [Reverse Engineer Anything](https://github.com/morluto/rea) (`rea-agents` 6.7.0, `analyze-javascript-application`), em análise estática da pasta `%LOCALAPPDATA%GitHubDesktopapp-3.6.6esourcesapp`. Escopo: `package.json`, `main.js`, `renderer.js`, `cli.js` e os source maps deles. Evidência `ev_8c1a8a407b29…`, artefato `sha256 dda53720…`. Foram recuperados 757 módulos do app pelos source maps. Nada foi executado. Os outros 249 arquivos e o comportamento em execução ficam fora do que foi observado.
+
+| O que o artefato mostra | Tipo | GitSwitch |
+|---|---|---|
+| Distribui o próprio Git (`git version 2.53.0.windows.4`), apontado por `LOCAL_GIT_DIRECTORY` e `GIT_EXEC_PATH` | observado | ⬜ usa o Git do sistema |
+| Credenciais pelo trampoline (`DESKTOP_TRAMPOLINE_TOKEN`) e tokens no cofre do Windows (`keytar.node`) | observado | ✅ token por conta, vindo do cofre do `gh` |
+| Comando `github`: só `open`, `clone [-b]` e o diretório atual; tudo só abre a janela | observado (`cli/main.ts` no source map) | ✅ `gitswitch` executa git/gh, responde em JSON e tem códigos de saída fixos |
+| Atalhos do comando em `%LOCALAPPDATA%GitHubDesktopin`, rodando com `ELECTRON_RUN_AS_NODE=1` (sem Node instalado) e com suporte a WSL | observado (`static/github.bat`, `github.sh`) | ✅ a instalação pelo app instalado agora usa o GitSwitch.exe; ⬜ WSL |
+| Janelas com `contextIsolation` desligado e `nodeIntegration` ligado | observado (expressões estáticas em `main.js`) | ✅ mais restrito: isolamento ligado, sandbox, sem Node na página |
+| Copilot: mensagem de commit gerada, resolução de conflitos, modelo escolhido por conta, provedores próprios (BYOK), modelos locais (`foundry_local_napi.node`) | observado (módulos e addons) | ⬜ próxima fase |
+| Notificações de PR: checks falhando, reviews e comentários | observado (`lib/notifications/*`) | ⬜ próxima fase |
+| Hooks do Git com o ambiente do shell do usuário, e tela de hook que falhou | observado (`lib/hooks/*`) | 🟡 hooks rodam; falha aparece nos detalhes do erro |
+| Zoom da interface, `git-trace` e shell dos hooks como configuração | observado (chaves de armazenamento) | ⬜ |
+| Captura de microfone (`pv_recorder.node`) entre os addons do Copilot | observado: o addon está lá | uso em execução não comprovado |
+
+O Git não foi analisado com o REA: o `git.exe` é nativo e não há Ghidra, Hopper ou IDA instalados. Como o código do Git é aberto, a própria skill indica ler o código-fonte nesse caso.
