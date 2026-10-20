@@ -11,6 +11,8 @@ const DEFAULTS = {
   accountDirs: {},      // login -> folder where that account's repos live
   syncGlobal: false,    // also switch gh + global git when the account changes
   openWith: 'vscode',   // id of the app "Abrir em" uses by default
+  lastRepoByAccount: {}, // login -> repo path last used with that account
+  repoHintDismissed: [], // repo paths whose "found on disk" banner was dismissed
   customApps: [],       // [{ id, name, kind: 'exe' | 'terminal', command, args }]
 };
 

@@ -140,15 +140,23 @@ function renderAccount() {
   renderScreens();
 }
 
-async function selectAccount(login) {
+// keepRepo: switch the account but stay in the open repository (used by the
+// "this repo usually uses…" banner); otherwise open the account's last repo.
+async function selectAccount(login, { keepRepo = false } = {}) {
   closePopovers();
   if (login === S.active) return;
-  await busy(`Trocando para ${login}…`, async () => {
-    await call('accounts:select', login);
-    S.active = login;
-    renderAccount();
+  const res = await busy(`Trocando para ${login}…`, () => call('accounts:select', login, { keepRepo }));
+  if (!res) return;
+  S.active = login;
+  renderAccount();
+  const name = S.repos.find((r) => r.path === res.repo)?.name;
+  if (res.repo && res.repo !== S.repo) {
+    await selectRepo(res.repo);
+    toast(`Conta ativa: ${login}. Abri ${name}, o último repositório usado com ela.`);
+  } else {
+    await refresh({ quiet: true });
     toast(S.syncGlobal ? `Conta ativa: ${login} (também no terminal)` : `Conta ativa: ${login}`);
-  });
+  }
 }
 
 // Suggests the account a repo belongs to when it differs from the active one.
@@ -163,7 +171,7 @@ function renderAccountHint() {
   if (!suggested || suggested === S.active) return;
   bar.replaceChildren(
     el('span', { class: 'grow', text: `Este repositório costuma usar a conta ${suggested}. Você está como ${S.active}.` }),
-    el('button', { class: 'primary', text: `Trocar para ${suggested}`, onclick: () => selectAccount(suggested) }),
+    el('button', { class: 'primary', text: `Trocar para ${suggested}`, onclick: () => selectAccount(suggested, { keepRepo: true }) }),
     el('button', { class: 'ghost', text: 'Ignorar', onclick: () => { bar.hidden = true; } }),
   );
   bar.hidden = false;
@@ -277,6 +285,7 @@ async function runDetect({ quiet = false, openFor = null } = {}) {
     toast(res.autoSet.map((x) => `Pasta de @${x.login}: ${x.folder}`).join('\n'));
   }
   S.missing = res.missing;
+  S.missingFresh = res.fresh;
   renderRepoHint();
   if (openFor && res.missing.some((m) => m.account === openFor)) openImportModal(openFor);
   return res;
@@ -284,14 +293,32 @@ async function runDetect({ quiet = false, openFor = null } = {}) {
 
 function renderRepoHint() {
   const bar = $('repoHint');
-  const n = S.missing.length;
+  const fresh = S.missingFresh || [];
+  const n = fresh.length;
   bar.hidden = !n;
   if (!n) return;
   bar.replaceChildren(
     el('span', { class: 'grow', text: n === 1 ? 'Encontrei 1 repositório das suas contas que ainda não está no GitSwitch.' : `Encontrei ${n} repositórios das suas contas que ainda não estão no GitSwitch.` }),
     el('button', { class: 'primary', text: 'Ver e adicionar', onclick: () => openImportModal() }),
-    el('button', { class: 'ghost', text: 'Agora não', onclick: () => { bar.hidden = true; } }),
+    el('button', {
+      class: 'ghost', text: 'Agora não',
+      onclick: async () => {
+        bar.hidden = true;
+        await call('repos:dismissHint', fresh.map((m) => m.path)).catch(() => {});
+        S.missingFresh = [];
+        toast('Tudo bem. Para ver depois: menu Repositório → Procurar no computador.');
+      },
+    }),
   );
+}
+
+// Repo menu entry: scan again and show everything found, dismissed or not.
+async function findReposOnDisk() {
+  closePopovers();
+  const res = await busy('Procurando repositórios no computador…', () => runDetect({ quiet: false }));
+  if (!res) return;
+  if (S.missing.length) openImportModal();
+  else toast('Todos os repositórios das suas contas já estão no GitSwitch.');
 }
 
 function openImportModal(focusLogin = null) {
@@ -322,6 +349,7 @@ function openImportModal(focusLogin = null) {
       await call('repos:addMany', chosen);
       const added = new Set(chosen.map((m) => m.path));
       S.missing = S.missing.filter((m) => !added.has(m.path));
+      S.missingFresh = (S.missingFresh || []).filter((m) => !added.has(m.path));
       renderRepoHint();
       await loadRepos();
       if (!S.repo) await selectRepo(chosen[0].path);
@@ -441,7 +469,8 @@ function openRepoMenu() {
     list,
     el('div', { class: 'pop-foot' },
       el('button', { class: 'primary', text: 'Clonar do GitHub…', onclick: openCloneModal }),
-      el('button', { text: 'Adicionar pasta…', onclick: addExisting })),
+      el('button', { text: 'Adicionar pasta…', onclick: addExisting }),
+      el('button', { text: S.missing.length ? `Procurar no computador (${S.missing.length})` : 'Procurar no computador…', onclick: findReposOnDisk })),
   );
   openPopover(menu, $('repoBtn'));
   filter.focus();
@@ -1757,8 +1786,16 @@ function wire() {
         runDetect({ openFor: fresh.login });
       }
     }
+    const before = S.repo;
     await loadAccounts().catch(() => {});
     await loadRepos().catch(() => {});
+    if (S.repo && S.repo !== before) {
+      S.unchecked.clear();
+      S.sel.clear();
+      S.selectedFile = null;
+      S.commits = [];
+      showEmptyDiff();
+    }
     if ($('modal').hidden) refresh({ quiet: true });
   });
 }

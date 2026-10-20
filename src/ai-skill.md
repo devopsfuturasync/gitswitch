@@ -36,10 +36,14 @@ This machine has more than one GitHub account logged in with the GitHub CLI. Pla
 | `gitswitch commit -m "msg" [--all] [--amend] [files…]` | Commit with the account's identity |
 | `gitswitch clone <owner/repo or url> [--as login] [--dir path]` | Clone into the account's folder and add it to GitSwitch |
 | `gitswitch repos [--account login] --json` | Repositories known to GitSwitch |
-| `gitswitch use <login>` | Change the active account in the app |
+| `gitswitch use <login> [--keep-repo] --json` | Make an account active (the app follows) and select the repo last used with it; `repo` in the reply is its path |
 | `gitswitch folder <login> [path]` | Show or set an account's folder |
 | `gitswitch detect [--add] --json` | Find repos on disk per account; `--add` adds the missing ones |
 | `gitswitch help [command] --json` | Machine-readable list of commands and options |
+
+## Switching accounts
+
+When the user asks to work as another account, run `gitswitch use <login> --json`. The reply's `repo` is the repository last used with that account (or `null`); `cd` there before continuing. Pass `--keep-repo` to switch the account for the repository you are already in. The GitSwitch app picks up the change when its window is focused.
 
 ## Exit codes
 

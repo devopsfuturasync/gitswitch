@@ -13,6 +13,7 @@ const scanner = require('./scanner');
 const apps = require('./apps');
 const install = require('./install');
 const tools = require('./tools');
+const { switchAccount } = require('./switch');
 
 const EXIT = { ok: 0, failed: 1, usage: 2, auth: 3, notfound: 4 };
 const KIND_EXIT = { usage: EXIT.usage, auth: EXIT.auth, notfound: EXIT.notfound, notrepo: EXIT.notfound, 'missing-ref': EXIT.notfound };
@@ -29,7 +30,7 @@ const COMMANDS = {
   commit: { usage: 'gitswitch commit -m "mensagem" [--all | arquivos…] [--amend] [-C caminho] [--as login]', summary: 'Commit com o nome e e-mail da conta' },
   clone: { usage: 'gitswitch clone <dono/repo | url> [--as login] [--dir pasta]', summary: 'Clona na pasta da conta e adiciona ao GitSwitch' },
   repos: { usage: 'gitswitch repos [--account login]', summary: 'Repositórios que o GitSwitch conhece' },
-  use: { usage: 'gitswitch use <login>', summary: 'Troca a conta ativa do app' },
+  use: { usage: 'gitswitch use <login> [--keep-repo]', summary: 'Troca a conta ativa do app e abre o último repositório usado com ela (devolve o caminho em "repo")' },
   folder: { usage: 'gitswitch folder <login> [caminho]', summary: 'Mostra ou define a pasta de uma conta' },
   detect: { usage: 'gitswitch detect [--add]', summary: 'Procura repositórios no disco por conta; --add adiciona os que faltam' },
   open: { usage: 'gitswitch open [caminho] [--app id]', summary: 'Abre o repositório no app padrão (ou em --app)' },
@@ -301,18 +302,21 @@ const run = {
 
   async repos({ opts }) {
     const repos = store.get('repos').filter((r) => !opts.account || r.account === opts.account);
-    print({ repos }, (d) => (d.repos.length ? d.repos.map((r) => `${(r.account || '-').padEnd(20)} ${r.path}`).join('\n') : 'nenhum repositório'));
+    print({ repos, active: store.get('activeAccount'), lastRepoByAccount: store.get('lastRepoByAccount') }, (d) => (d.repos.length ? d.repos.map((r) => `${(r.account || '-').padEnd(20)} ${r.path}`).join('\n') : 'nenhum repositório'));
   },
 
-  async use({ pos }) {
+  async use({ pos, opts }) {
     const login = pos[0];
     if (!login) throw new CliError('Diga a conta: gitswitch use <login>');
     const list = await allAccounts();
     const a = list.find((x) => x.login.toLowerCase() === login.toLowerCase());
     if (!a) throw new CliError(`A conta ${login} não está logada. Contas: ${list.map((x) => x.login).join(', ')}`, 'notfound');
-    store.set('activeAccount', a.login);
+    const repo = switchAccount(store, a.login, { keepRepo: Boolean(opts['keep-repo']) });
     if (store.get('syncGlobal')) await accounts.syncGlobal(a.login, overrides());
-    print({ active: a.login, syncedTerminal: Boolean(store.get('syncGlobal')) }, (d) => `conta ativa: ${d.active}`);
+    print({
+      active: a.login, repo, folder: store.get('accountDirs')[a.login] || null,
+      identity: a.identity, syncedTerminal: Boolean(store.get('syncGlobal')),
+    }, (d) => [`conta ativa: ${d.active}`, d.repo ? `repositório: ${d.repo}` : 'nenhum repositório usado com essa conta ainda'].join('\n'));
   },
 
   async folder({ pos }) {

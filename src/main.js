@@ -12,6 +12,7 @@ const updater = require('./updater');
 const install = require('./install');
 const ai = require('./ai');
 const scannerParse = require('./scanner').parseGithub;
+const { switchAccount, rememberRepoForAccount } = require('./switch');
 const tools = require('./tools');
 const { run } = require('./run');
 
@@ -160,10 +161,12 @@ const handlers = {
       syncGlobal: store.get('syncGlobal'),
     };
   },
-  async 'accounts:select'(login) {
-    store.set('activeAccount', login);
+  // Opens the account's last repository unless keepRepo (the "this repo
+  // usually uses…" banner switches the account for the repo already open).
+  async 'accounts:select'(login, { keepRepo = false } = {}) {
+    const repo = switchAccount(store, login, { keepRepo });
     if (store.get('syncGlobal')) await accounts.syncGlobal(login, overrides());
-    return login;
+    return { login, repo };
   },
   async 'accounts:add'() {
     openLoginConsole();
@@ -217,7 +220,9 @@ const handlers = {
         }
       }
     }
-    return { autoSet, suggested, missing: [...missing.values()].sort((x, y) => x.name.localeCompare(y.name)) };
+    const dismissed = store.get('repoHintDismissed');
+    const all = [...missing.values()].sort((x, y) => x.name.localeCompare(y.name));
+    return { autoSet, suggested, missing: all, fresh: all.filter((m) => !dismissed.some((d) => samePath(d, m.path))) };
   },
 
   // --- local repositories
@@ -226,6 +231,11 @@ const handlers = {
   },
   async 'repos:select'(repoPath) {
     store.set('selectedRepo', repoPath);
+    rememberRepoForAccount(store, repoPath);
+  },
+  // "Agora não" on the found-repos banner: don't offer these again.
+  async 'repos:dismissHint'(paths) {
+    store.set('repoHintDismissed', [...new Set([...store.get('repoHintDismissed'), ...paths])]);
   },
   async 'repos:remove'(repoPath) {
     if (settings().confirmRemoveRepo) {
