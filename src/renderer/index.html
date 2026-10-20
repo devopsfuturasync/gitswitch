@@ -29,13 +29,16 @@
     </button>
     <div class="spacer"></div>
     <div class="tb-actions" id="repoActions" hidden>
-      <button class="ghost" id="folderBtn" title="Pasta do repositório">Pasta ▾</button>
-      <div class="split">
-        <button class="ghost" id="openBtn" title="Abrir o repositório">Abrir</button>
-        <button class="ghost caret" id="openMenuBtn" title="Escolher onde abrir">▾</button>
+      <button class="act" id="folderBtn" title="Mover, juntar ou abrir a pasta do repositório" aria-haspopup="true">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Pasta</span><svg class="ico chev-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="act-split" role="group" aria-label="Abrir o repositório">
+        <button class="act" id="openBtn" title="Abrir o repositório no app padrão"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m13.5 5-3 14"/></svg><span id="openLabel">Abrir</span></button>
+        <button class="act caret" id="openMenuBtn" title="Escolher outro app" aria-label="Escolher outro app" aria-haspopup="true"><svg class="ico chev-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
       </div>
-      <button class="ghost" id="openGithub" title="Abrir no GitHub">GitHub</button>
+      <button class="act" id="openGithub" title="Abrir este repositório no GitHub"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M19 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"/></svg><span>GitHub</span></button>
     </div>
+    <button class="act icon-only" id="settingsBtn" title="Configurações" aria-label="Configurações"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
   </header>
 
   <div class="banner" id="accountHint" hidden></div>
@@ -51,14 +54,21 @@
       </div>
 
       <section class="panel" id="changesPanel">
-        <label class="select-all"><input type="checkbox" id="selectAll" checked> <span id="selectAllLabel">0 arquivos alterados</span></label>
+        <div class="select-all">
+          <label><input type="checkbox" id="selectAll" checked> <span id="selectAllLabel">0 arquivos alterados</span></label>
+          <button class="mini" id="stashBtn" type="button" title="Tirar todas as alterações da frente (stash) para trazer de volta depois" hidden><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg><span>Guardar</span></button>
+        </div>
         <ul class="list" id="fileList"></ul>
+        <div class="side-row" id="stashRow" hidden></div>
         <form class="commit" id="commitForm">
           <input id="summary" placeholder="Resumo (obrigatório)" autocomplete="off" maxlength="200">
           <textarea id="description" placeholder="Descrição" rows="3"></textarea>
+          <label class="inline-check" id="amendRow" hidden><input type="checkbox" id="amend"> Emendar o último commit</label>
+          <p class="amend-hint" id="amendHint" hidden>Esse commit já está no GitHub. Depois de emendar, será preciso forçar o envio.</p>
           <button type="submit" class="primary" id="commitBtn" disabled>Commit</button>
           <p class="as" id="commitAs"></p>
         </form>
+        <div class="side-row undo" id="undoRow" hidden></div>
       </section>
 
       <section class="panel" id="historyPanel" hidden>

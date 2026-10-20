@@ -19,6 +19,9 @@ const S = {
   knownLogins: null,
   missing: [],
   apps: null,
+  sel: new Map(),      // path -> { hash, all, picked } for files with picked lines
+  settings: {},
+  lastFetch: 0,
   update: null,
   manualCheck: false,
 };
@@ -58,26 +61,53 @@ function ago(ms) {
 }
 
 let toastTimer;
-function toast(message, isError = false) {
+function toast(message, isError = false, detail = null) {
   const t = $('toast');
-  t.textContent = message;
   t.className = isError ? 'toast error' : 'toast';
+  t.replaceChildren(el('span', { class: 'toast-text', text: message }));
+  if (detail && detail !== message) {
+    t.append(el('button', { class: 'toast-more', text: 'Detalhes', onclick: () => showDetail(message, detail) }));
+  }
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 9000 : 3500);
+  toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 12000 : 3500);
 }
 
-async function busy(text, fn) {
+function showDetail(title, detail) {
+  $('toast').hidden = true;
+  openModal(title, [el('pre', { class: 'detail', text: detail })], 'Fechar', async () => {}, { cancel: false });
+}
+
+// Runs fn with the progress pill up. Errors become a toast, unless rethrow
+// is set and the caller handles them.
+async function busy(text, fn, { rethrow = false } = {}) {
   $('busyText').textContent = text;
   $('busy').hidden = false;
   try {
     return await fn();
   } catch (err) {
-    toast(err.message, true);
+    if (rethrow) throw err;
+    toast(err.message, true, err.detail);
     return undefined;
   } finally {
     $('busy').hidden = true;
   }
+}
+
+// A small dialog with several answers; resolves to the picked id.
+function choose(title, text, buttons) {
+  return new Promise((resolve) => {
+    const done = (id) => { S.onModalClose = null; closeModal(); resolve(id); };
+    const form = el('form', {},
+      el('h2', { text: title }),
+      el('div', { class: 'modal-body' }, el('p', { class: 'hint', text })),
+      el('div', { class: 'modal-foot' }, buttons.map(([id, label, primary]) => el('button', {
+        type: 'button', class: primary ? 'primary' : null, text: label, onclick: () => done(id),
+      }))));
+    $('modalBody').replaceChildren(form);
+    $('modal').hidden = false;
+    S.onModalClose = () => resolve('cancel');
+  });
 }
 
 function activeAccount() {
@@ -343,6 +373,7 @@ async function selectRepo(p) {
   S.repo = p;
   S.info = null;
   S.unchecked.clear();
+  S.sel.clear();
   S.selectedFile = null;
   S.selectedCommit = null;
   S.commits = [];
@@ -573,6 +604,10 @@ function renderBranch() {
     icon = '↑';
     label = 'Publicar branch';
     hint = 'Enviar para o GitHub';
+  } else if (i.behind > 0 && i.ahead > 0) {
+    icon = '⇅';
+    label = 'Pull ou forçar push';
+    hint = `${i.behind} para baixar, ${i.ahead} para enviar`;
   } else if (i.behind > 0) {
     icon = '↓';
     label = `Pull origin`;
@@ -588,47 +623,116 @@ function renderBranch() {
   sync.disabled = !i.remoteUrl || !i.branch;
 }
 
+// ---------- line selection ----------
+// Same fingerprint as git.js diffHash, so the main process can tell when a
+// file changed after its lines were picked.
+function diffHash(text) {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return `${text.length}:${h}`;
+}
+
+// 'all' | 'none' | 'partial' for a changed file.
+function selState(p) {
+  if (S.unchecked.has(p)) return 'none';
+  const s = S.sel.get(p);
+  if (!s || s.picked.size === s.all.length) return 'all';
+  return s.picked.size ? 'partial' : 'none';
+}
+
+function setWholeFile(p, on) {
+  S.sel.delete(p);
+  if (on) S.unchecked.delete(p); else S.unchecked.add(p);
+}
+
+// Toggles change lines (indices into the raw diff) for the selected file.
+function toggleLines(p, text, allChanges, indices, on) {
+  let s = S.sel.get(p);
+  if (!s || s.hash !== diffHash(text)) {
+    const start = S.unchecked.has(p) ? [] : allChanges;
+    s = { hash: diffHash(text), all: allChanges, picked: new Set(start) };
+  }
+  S.unchecked.delete(p);
+  for (const i of indices) if (on) s.picked.add(i); else s.picked.delete(i);
+  if (s.picked.size === s.all.length) S.sel.delete(p);
+  else if (!s.picked.size) setWholeFile(p, false);
+  else S.sel.set(p, s);
+}
+
+// ---------- changes list ----------
 function renderFiles() {
   const files = S.info.files;
   const known = new Set(files.map((f) => f.path));
   for (const p of S.unchecked) if (!known.has(p) || S.info.merging) S.unchecked.delete(p);
+  for (const p of S.sel.keys()) if (!known.has(p) || S.info.merging) S.sel.delete(p);
   if (S.selectedFile && !known.has(S.selectedFile)) {
     S.selectedFile = null;
     if (S.tab === 'changes') showEmptyDiff();
   }
 
   $('changesCount').textContent = files.length;
-  const checkedCount = files.length - S.unchecked.size;
+  const states = files.map((f) => selState(f.path));
   const all = $('selectAll');
-  all.checked = files.length > 0 && S.unchecked.size === 0;
-  all.indeterminate = S.unchecked.size > 0 && checkedCount > 0;
+  all.checked = files.length > 0 && states.every((s) => s === 'all');
+  all.indeterminate = !all.checked && states.some((s) => s !== 'none');
   all.disabled = files.length === 0 || S.info.merging;
   $('selectAllLabel').textContent = files.length === 1 ? '1 arquivo alterado' : `${files.length} arquivos alterados`;
+  $('stashBtn').hidden = !files.length || S.info.merging;
 
   const list = $('fileList');
   if (!files.length) {
     list.replaceChildren(el('li', { class: 'empty-list', text: 'Nenhuma alteração local.' }));
   } else {
-    list.replaceChildren(...files.map((f) => {
+    list.replaceChildren(...files.map((f, idx) => {
       const box = el('input', { type: 'checkbox', title: S.info.merging ? 'Durante a junção tudo entra no commit' : 'Incluir no commit' });
-      box.checked = !S.unchecked.has(f.path);
+      box.checked = states[idx] === 'all';
+      box.indeterminate = states[idx] === 'partial';
       box.disabled = S.info.merging;
       box.addEventListener('click', (e) => e.stopPropagation());
       box.addEventListener('change', () => {
-        if (box.checked) S.unchecked.delete(f.path); else S.unchecked.add(f.path);
+        setWholeFile(f.path, box.checked);
         renderFiles();
+        if (S.selectedFile === f.path) selectFile(f, { keepScroll: true });
       });
       return el('li', {
         class: f.path === S.selectedFile ? 'selected' : null,
         title: f.orig ? `${f.orig} → ${f.path}` : f.path,
         onclick: () => selectFile(f),
+        oncontextmenu: (e) => { e.preventDefault(); fileMenu(f); },
       },
       box,
       el('span', { class: 'file-path', text: `‎${f.path}` }),
       el('span', { class: `kind ${f.kind}`, title: KIND_LABEL[f.kind], text: KIND_LETTER[f.kind] }));
     }));
   }
+  renderStashRow();
+  renderUndoRow();
   updateCommitButton();
+}
+
+function renderStashRow() {
+  const row = $('stashRow');
+  const n = S.info?.stashes?.length || 0;
+  row.hidden = !n;
+  if (!n) return;
+  row.replaceChildren(el('button', {
+    class: 'link-row',
+    onclick: openStashModal,
+  }, el('span', { class: 'grow', text: n === 1 ? '1 conjunto de alterações guardado' : `${n} conjuntos de alterações guardados` }), el('span', { text: 'Ver ›' })));
+}
+
+// "Desfazer" for the newest commit while it only exists on this computer.
+function renderUndoRow() {
+  const row = $('undoRow');
+  const i = S.info;
+  const unpushed = i?.head && (!i.upstream || i.ahead > 0) && !i.merging;
+  row.hidden = !unpushed;
+  $('amendRow').hidden = !i?.head || i.merging;
+  if (!unpushed) return;
+  row.replaceChildren(
+    el('span', { class: 'grow' }, el('span', { class: 'muted', text: `Último commit ${ago(i.head.date)}` }), el('strong', { text: i.head.subject })),
+    el('button', { text: 'Desfazer', onclick: undoCommit }),
+  );
 }
 
 // During a merge an empty summary falls back to a default message.
@@ -636,20 +740,37 @@ function commitSummary() {
   return $('summary').value.trim() || (S.info?.merging ? 'Juntar com o GitHub' : '');
 }
 
+function commitFiles() {
+  return S.info.files.flatMap((f) => {
+    const st = selState(f.path);
+    if (st === 'none') return [];
+    if (st === 'partial') {
+      const s = S.sel.get(f.path);
+      return [{ ...f, lines: [...s.picked], hash: s.hash }];
+    }
+    return [f];
+  });
+}
+
 function updateCommitButton() {
-  const count = S.info ? S.info.files.length - S.unchecked.size : 0;
+  const count = S.info ? commitFiles().length : 0;
+  const amend = $('amend').checked;
   const btn = $('commitBtn');
-  btn.textContent = `Commit em ${S.info?.branch || 'HEAD'}${count ? ` (${count})` : ''}`;
+  btn.textContent = amend
+    ? `Emendar o último commit${count ? ` (+${count})` : ''}`
+    : `Commit em ${S.info?.branch || 'HEAD'}${count ? ` (${count})` : ''}`;
   const conflicts = S.info?.files.some((f) => f.kind === 'conflict');
-  btn.disabled = !count || !commitSummary() || !S.active || conflicts;
+  btn.disabled = (!count && !amend) || !commitSummary() || !S.active || conflicts;
   $('summary').placeholder = S.info?.merging ? 'Juntar com o GitHub' : 'Resumo (obrigatório)';
 }
 
-async function selectFile(f) {
+// ---------- diff ----------
+async function selectFile(f, { keepScroll = false } = {}) {
   S.selectedFile = f.path;
   renderFiles();
+  const scroll = $('diff').scrollTop;
   try {
-    const text = await call('repo:diff', S.repo, f, S.info.initial);
+    const d = await call('repo:diff', S.repo, f, S.info.initial);
     if (S.selectedFile !== f.path) return;
     const resolveWith = (side) => async () => {
       await busy('Resolvendo…', () => call('repo:resolve', S.repo, f.path, side));
@@ -657,26 +778,96 @@ async function selectFile(f) {
       const again = S.info.files.find((x) => x.path === f.path);
       if (again) selectFile(again); else showEmptyDiff();
     };
-    const actions = f.kind === 'conflict'
-      ? [
+    const actions = [];
+    if (f.kind === 'conflict') {
+      actions.push(
         el('button', { text: 'Usar a desta pasta', onclick: resolveWith('ours') }),
-        el('button', { text: 'Usar a do GitHub', onclick: resolveWith('theirs') }),
-      ]
-      : S.info.merging ? [] : [el('button', { class: 'danger', text: 'Descartar alterações', onclick: () => discard([f]) })];
+        el('button', { text: 'Usar a outra versão', onclick: resolveWith('theirs') }),
+      );
+    }
+    if (d.kind === 'text') actions.push(whitespaceToggle(() => selectFile(f, { keepScroll: true })));
+    if (f.kind !== 'conflict' && !S.info.merging) {
+      actions.push(el('button', { class: 'danger', text: 'Descartar', title: 'Descartar as alterações deste arquivo', onclick: () => discard([f]) }));
+    }
     const header = el('div', { class: 'diff-header' },
       el('span', { class: `kind ${f.kind}`, text: KIND_LETTER[f.kind] }),
       el('span', { class: 'grow', text: f.orig ? `${f.orig} → ${f.path}` : f.path }),
       ...actions);
-    $('diff').replaceChildren(header, renderDiff(text));
-    $('diff').scrollTop = 0;
+
+    let body;
+    if (d.kind === 'image') body = renderImageDiff(d);
+    else if (d.kind === 'large') body = el('div', { class: 'binary', text: `Diff grande demais para mostrar (${Math.round(d.size / 1024 / 1024)} MB). Abra o arquivo no editor.` });
+    else {
+      const selectable = !S.settings.hideWhitespace && !S.info.merging && f.kind !== 'conflict';
+      body = renderDiff(d.text, selectable ? {
+        state: () => {
+          if (S.unchecked.has(f.path)) return null;
+          const s = S.sel.get(f.path);
+          return s && s.hash === diffHash(d.text) ? s.picked : 'all';
+        },
+        toggle: (indices, on, all) => {
+          toggleLines(f.path, d.text, all, indices, on);
+          renderFiles();
+        },
+      } : null, { titles: false });
+      if (!selectable && S.settings.hideWhitespace && !S.info.merging) {
+        body.prepend(el('div', { class: 'diff-note', text: 'Com os espaços ocultos não dá para escolher linhas. O commit leva o arquivo inteiro.' }));
+      }
+    }
+    $('diff').replaceChildren(header, body);
+    $('diff').scrollTop = keepScroll ? scroll : 0;
   } catch (err) {
-    toast(err.message, true);
+    toast(err.message, true, err.detail);
   }
+}
+
+function whitespaceToggle(rerender) {
+  const on = S.settings.hideWhitespace;
+  return el('button', {
+    class: `toggle-btn${on ? ' on' : ''}`,
+    'aria-pressed': on ? 'true' : 'false',
+    title: 'Ocultar mudanças só de espaço em branco',
+    text: on ? 'Espaços ocultos' : 'Ocultar espaços',
+    onclick: async () => {
+      S.settings = { ...S.settings, ...(await call('settings:set', { hideWhitespace: !on })) };
+      rerender();
+    },
+  });
+}
+
+function renderImageDiff(d) {
+  const pane = (label, src) => el('figure', { class: 'img-pane' },
+    el('figcaption', { text: label }),
+    src ? el('img', { src, alt: label }) : el('div', { class: 'img-empty', text: label === 'Antes' ? 'Arquivo novo' : 'Arquivo removido' }));
+  return el('div', { class: 'img-diff' }, pane('Antes', d.before), pane('Depois', d.after));
+}
+
+async function fileMenu(f) {
+  const ext = f.path.includes('.') ? f.path.slice(f.path.lastIndexOf('.')) : '';
+  const picked = await call('menu:popup', [
+    { id: 'discard', label: 'Descartar alterações…', enabled: !S.info.merging && f.kind !== 'conflict' },
+    { type: 'separator' },
+    { id: 'ignore', label: 'Ignorar este arquivo (.gitignore)' },
+    { id: 'ignoreExt', label: `Ignorar todos os arquivos ${ext}`, enabled: Boolean(ext) },
+    { type: 'separator' },
+    { id: 'copy', label: 'Copiar caminho' },
+    { id: 'copyFull', label: 'Copiar caminho completo' },
+    { id: 'show', label: 'Mostrar no Explorer', enabled: f.kind !== 'deleted' },
+  ]);
+  const abs = `${S.repo}\\${f.path.replaceAll('/', '\\')}`;
+  if (picked === 'discard') discard([f]);
+  else if (picked === 'ignore' || picked === 'ignoreExt') {
+    await busy('Atualizando .gitignore…', () => call('repo:ignore', S.repo, picked === 'ignore' ? f.path : `*${ext}`));
+    await refresh();
+  } else if (picked === 'copy') call('clipboard:write', f.path);
+  else if (picked === 'copyFull') call('clipboard:write', abs);
+  else if (picked === 'show') call('shell:showItem', abs);
 }
 
 async function discard(files) {
   const done = await busy('Descartando…', () => call('repo:discard', S.repo, files, S.info.initial));
   if (done) {
+    for (const f of files) S.sel.delete(f.path);
     showEmptyDiff();
     await refresh();
   }
@@ -689,7 +880,10 @@ function showEmptyDiff(text = 'Selecione um arquivo para ver as alterações.') 
 // ---------- diff rendering ----------
 const MAX_LINES = 15000;
 
-function renderDiff(text) {
+// sel (optional): { state() -> 'all' | Set | null, toggle(indices, on, allChanges) }
+// makes +/- lines pickable: click the gutter for a line, the @@ row for a hunk,
+// shift-click for a range.
+function renderDiff(text, sel = null, { titles = true } = {}) {
   const out = document.createDocumentFragment();
   const preamble = [];
   let block = null;
@@ -698,28 +892,34 @@ function renderDiff(text) {
   let oldN = 0;
   let newN = 0;
   let count = 0;
+  const changeRows = [];
+  const hunks = [];
+  let hunk = null;
 
   const startBlock = (title) => {
     block = el('div', { class: 'file-block' });
-    if (title) block.append(el('div', { class: 'file-title', text: title }));
+    if (title && titles) block.append(el('div', { class: 'file-title', text: title }));
     out.append(block);
     table = null;
   };
   const row = (cls, a, b, src) => {
     if (!table) {
       if (!block) startBlock(null);
-      table = el('table', { class: 'code' });
+      table = el('table', { class: `code${sel ? ' pickable' : ''}` });
       block.append(table);
     }
-    table.append(el('tr', { class: cls },
-      el('td', { class: 'ln', text: a }), el('td', { class: 'ln', text: b }), el('td', { class: 'src', text: src })));
+    const tr = el('tr', { class: cls },
+      el('td', { class: 'ln', text: a }), el('td', { class: 'ln', text: b }), el('td', { class: 'src', text: src.replace(/\r$/, '') }));
+    table.append(tr);
+    return tr;
   };
 
   const lines = text.split('\n');
   if (lines.at(-1) === '') lines.pop();
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (++count > MAX_LINES) {
-      out.append(el('div', { class: 'binary', text: 'Diff muito grande — mostrando só o começo.' }));
+      out.append(el('div', { class: 'binary', text: 'Diff muito grande: mostrando só o começo.' }));
       break;
     }
     if (line.startsWith('diff --git ')) {
@@ -730,30 +930,80 @@ function renderDiff(text) {
     }
     if (line.startsWith('Binary files')) {
       if (!block) startBlock(null);
-      block.append(el('div', { class: 'binary', text: 'Arquivo binário — sem visualização de texto.' }));
+      block.append(el('div', { class: 'binary', text: 'Arquivo binário: sem visualização de texto.' }));
       inHeader = false;
       continue;
     }
     if (line.startsWith('@@')) {
       const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (m) { oldN = Number(m[1]); newN = Number(m[2]); }
-      row('hunk', '', '', line);
+      hunk = { tr: row('hunk', '', '', line), rows: [] };
+      hunks.push(hunk);
       inHeader = false;
       continue;
     }
     if (inHeader) continue;
-    if (!block) { preamble.push(line); continue; }
+    if (!block && !hunk) { preamble.push(line); continue; }
     const c = line[0];
-    if (c === '+') row('add', '', newN++, line.slice(1));
-    else if (c === '-') row('del', oldN++, '', line.slice(1));
-    else if (c === '\\') row('hunk', '', '', line);
+    if (c === '+' || c === '-') {
+      const tr = row(c === '+' ? 'add' : 'del', c === '-' ? oldN++ : '', c === '+' ? newN++ : '', line.slice(1));
+      tr.dataset.i = i;
+      changeRows.push(tr);
+      hunk?.rows.push(tr);
+    } else if (c === '\\') row('hunk', '', '', line);
     else row('', oldN++, newN++, line.slice(1));
+  }
+
+  if (sel && changeRows.length) {
+    const all = changeRows.map((tr) => Number(tr.dataset.i));
+    const paint = () => {
+      const st = sel.state();
+      for (const tr of changeRows) {
+        const on = st === 'all' || (st instanceof Set && st.has(Number(tr.dataset.i)));
+        tr.classList.toggle('picked', on);
+        tr.classList.toggle('unpicked', !on);
+      }
+      for (const h of hunks) {
+        const n = h.rows.filter((tr) => tr.classList.contains('picked')).length;
+        h.tr.classList.toggle('partial', n > 0 && n < h.rows.length);
+        h.tr.classList.toggle('none', h.rows.length > 0 && n === 0);
+      }
+    };
+    let last = null;
+    for (const tr of changeRows) {
+      for (const td of tr.querySelectorAll('td.ln')) {
+        td.title = 'Clique para incluir ou tirar esta linha do commit (Shift para um intervalo)';
+        td.addEventListener('click', (e) => {
+          const idx = changeRows.indexOf(tr);
+          const on = !tr.classList.contains('picked');
+          const range = e.shiftKey && last !== null
+            ? changeRows.slice(Math.min(last, idx), Math.max(last, idx) + 1)
+            : [tr];
+          last = idx;
+          sel.toggle(range.map((r) => Number(r.dataset.i)), on, all);
+          paint();
+        });
+      }
+    }
+    for (const h of hunks) {
+      if (!h.rows.length) continue;
+      h.tr.title = 'Clique para incluir ou tirar este trecho do commit';
+      h.tr.classList.add('hunk-pick');
+      h.tr.addEventListener('click', () => {
+        const on = !h.rows.every((tr) => tr.classList.contains('picked'));
+        sel.toggle(h.rows.map((r) => Number(r.dataset.i)), on, all);
+        paint();
+      });
+    }
+    paint();
   }
 
   const message = preamble.join('\n').trim();
   if (message) out.prepend(el('div', { class: 'commit-msg', text: message }));
   if (!out.childNodes.length) out.append(el('div', { class: 'binary', text: 'Sem diferenças de conteúdo (pode ser só mudança de permissão).' }));
-  return out;
+  const wrap = el('div', {});
+  wrap.append(out);
+  return wrap;
 }
 
 // ---------- history ----------
@@ -764,15 +1014,24 @@ async function loadHistory() {
     list.replaceChildren(el('li', { class: 'empty-list', text: 'Nenhum commit ainda.' }));
     return;
   }
-  list.replaceChildren(...S.commits.map((c) => el('li', {
+  list.replaceChildren(...S.commits.map((c, idx) => el('li', {
     class: `commit-item${c.sha === S.selectedCommit ? ' selected' : ''}`,
     'data-sha': c.sha,
     onclick: () => selectCommit(c),
+    oncontextmenu: (e) => { e.preventDefault(); commitMenu(c, idx); },
   },
   el('span', { class: 'subject', text: c.subject }),
   el('span', { class: 'muted' },
+    isUnpushed(idx) ? el('span', { class: 'ref local', title: 'Ainda não foi enviado ao GitHub', text: '↑ local' }) : null,
     ...(c.refs || '').split(', ').filter(Boolean).map((r) => el('span', { class: 'ref', text: r.replace('HEAD -> ', '') })),
     `${c.author} · ${ago(c.date)} · ${c.short}`))));
+}
+
+// Commits at the top of the list that the GitHub branch doesn't have yet.
+function isUnpushed(idx) {
+  const i = S.info;
+  if (!i?.remoteUrl) return false;
+  return !i.upstream || idx < i.ahead;
 }
 
 async function selectCommit(c) {
@@ -784,12 +1043,51 @@ async function selectCommit(c) {
     const header = el('div', { class: 'diff-header' },
       el('span', { class: 'grow' },
         el('span', { class: 'title', text: c.subject }),
-        el('span', { class: 'muted', text: `${c.author} <${c.email}> · ${new Date(c.date).toLocaleString('pt-BR')} · ${c.short}` })));
+        el('span', { class: 'muted', text: `${c.author} <${c.email}> · ${new Date(c.date).toLocaleString('pt-BR')} · ${c.short}` })),
+      whitespaceToggle(() => selectCommit(c)));
     $('diff').replaceChildren(header, renderDiff(text));
     $('diff').scrollTop = 0;
   } catch (err) {
-    toast(err.message, true);
+    toast(err.message, true, err.detail);
   }
+}
+
+async function commitMenu(c, idx) {
+  const isHead = idx === 0;
+  const unpushed = isUnpushed(idx) || !S.info.remoteUrl;
+  const web = githubWebUrl();
+  const picked = await call('menu:popup', [
+    { id: 'copy', label: 'Copiar SHA' },
+    { id: 'copyMsg', label: 'Copiar mensagem' },
+    { type: 'separator' },
+    { id: 'branch', label: 'Criar branch a partir deste commit…' },
+    { id: 'checkout', label: 'Fazer checkout deste commit' },
+    { id: 'revert', label: 'Reverter este commit' },
+    { type: 'separator' },
+    { id: 'undo', label: 'Desfazer este commit', enabled: isHead && unpushed && !S.info.merging },
+    { id: 'amend', label: 'Emendar este commit', enabled: isHead && !S.info.merging },
+    { type: 'separator' },
+    { id: 'web', label: 'Ver no GitHub', enabled: Boolean(web) && !unpushed },
+  ]);
+  if (picked === 'copy') { call('clipboard:write', c.sha); toast('SHA copiado.'); }
+  else if (picked === 'copyMsg') call('clipboard:write', c.subject);
+  else if (picked === 'branch') openNewBranchModal(c);
+  else if (picked === 'checkout') {
+    await busy(`Indo para ${c.short}…`, () => call('repo:checkoutCommit', S.repo, c.sha));
+    toast('Você está num commit fora de branch. Crie uma branch para guardar trabalho novo aqui.');
+    await refresh();
+  } else if (picked === 'revert') {
+    const ok = await busy('Revertendo…', async () => { await call('repo:revert', S.repo, c.sha, c.parents.length); return true; });
+    if (ok) toast(`Criado um commit que desfaz "${c.subject}".`);
+    await refresh();
+  } else if (picked === 'undo') undoCommit();
+  else if (picked === 'amend') { setTab('changes'); startAmend(); }
+  else if (picked === 'web') call('shell:url', `${web}/commit/${c.sha}`);
+}
+
+function githubWebUrl() {
+  const m = S.info?.remoteUrl?.match(/github\.com[:/](.+?)(\.git)?\/?$/);
+  return m ? `https://github.com/${m[1]}` : null;
 }
 
 function setTab(tab) {
@@ -804,6 +1102,33 @@ function setTab(tab) {
   else if (S.info) renderFiles();
 }
 
+// ---------- undo / amend ----------
+async function undoCommit() {
+  const message = await busy('Desfazendo o commit…', () => call('repo:undo', S.repo));
+  if (message === undefined) return;
+  const [summary, ...rest] = message.split('\n');
+  $('summary').value = summary;
+  $('description').value = rest.join('\n').trim();
+  $('amend').checked = false;
+  toast('Commit desfeito. As alterações voltaram para a lista.');
+  if (S.tab !== 'changes') setTab('changes');
+  await refresh();
+}
+
+async function startAmend() {
+  $('amend').checked = true;
+  if (!$('summary').value.trim()) {
+    const message = await call('repo:lastMessage', S.repo).catch(() => '');
+    const [summary, ...rest] = message.split('\n');
+    $('summary').value = summary;
+    $('description').value = rest.join('\n').trim();
+  }
+  const pushed = S.info.upstream && S.info.ahead === 0;
+  $('amendHint').hidden = !pushed;
+  updateCommitButton();
+  $('summary').focus();
+}
+
 // ---------- branches ----------
 async function openBranchMenu() {
   const menu = $('branchMenu');
@@ -811,7 +1136,7 @@ async function openBranchMenu() {
   try {
     data = await call('repo:branches', S.repo);
   } catch (err) {
-    toast(err.message, true);
+    toast(err.message, true, err.detail);
     return;
   }
   const filter = el('input', { placeholder: 'Filtrar branches', autocomplete: 'off' });
@@ -819,6 +1144,7 @@ async function openBranchMenu() {
   const item = (name, isRemote) => el('button', {
     class: `item${name === S.info.branch ? ' current' : ''}`,
     onclick: () => checkout(name, isRemote),
+    oncontextmenu: (e) => { e.preventDefault(); e.stopPropagation(); branchItemMenu(name, isRemote); },
   },
   el('span', { class: 'check', text: name === S.info.branch ? '✓' : '' }),
   el('span', { class: 'grow' }, el('span', { text: name })));
@@ -829,7 +1155,7 @@ async function openBranchMenu() {
     list.replaceChildren(
       el('div', { class: 'pop-title', text: 'Locais' }),
       ...local.map((b) => item(b, false)),
-      remote.length ? el('div', { class: 'pop-title', text: 'Remotas' }) : null,
+      remote.length ? el('div', { class: 'pop-title', text: 'Só no GitHub' }) : null,
       ...remote.map((b) => item(b, true)),
     );
   };
@@ -838,45 +1164,198 @@ async function openBranchMenu() {
   menu.replaceChildren(
     el('div', { class: 'pop-head' }, filter),
     list,
-    el('div', { class: 'pop-foot' }, el('button', { class: 'primary', text: 'Nova branch…', onclick: openNewBranchModal })),
+    el('div', { class: 'pop-foot' },
+      el('button', { class: 'primary', text: 'Nova branch…', onclick: () => openNewBranchModal() }),
+      el('button', { text: 'Juntar outra branch nesta…', disabled: !S.info.branch, onclick: () => openMergeModal(data) }),
+      el('p', { class: 'hint', text: 'Clique com o botão direito numa branch para renomear ou apagar.' })),
   );
   openPopover(menu, $('branchBtn'));
   filter.focus();
 }
 
+async function branchItemMenu(name, isRemote) {
+  const current = name === S.info.branch;
+  const picked = await call('menu:popup', [
+    { id: 'checkout', label: 'Trocar para esta branch', enabled: !current },
+    { id: 'merge', label: `Juntar em ${S.info.branch || 'HEAD'}`, enabled: !current && Boolean(S.info.branch) },
+    { type: 'separator' },
+    { id: 'rename', label: 'Renomear…', enabled: !isRemote },
+    { id: 'delete', label: 'Apagar…', enabled: !isRemote && !current },
+    { type: 'separator' },
+    { id: 'copy', label: 'Copiar nome' },
+  ]);
+  closePopovers();
+  if (picked === 'checkout') checkout(name, isRemote);
+  else if (picked === 'merge') mergeBranch(name);
+  else if (picked === 'rename') openRenameBranchModal(name);
+  else if (picked === 'copy') call('clipboard:write', name);
+  else if (picked === 'delete') {
+    const done = await busy('Apagando a branch…', () => call('repo:deleteBranch', S.repo, name));
+    if (done) toast(`Branch ${name} apagada.`);
+  }
+}
+
 async function checkout(name, isRemote) {
   closePopovers();
-  await busy(`Mudando para ${name}…`, () => call('repo:checkout', S.repo, name, isRemote));
+  try {
+    await busy(`Mudando para ${name}…`, () => call('repo:checkout', S.repo, name, isRemote), { rethrow: true });
+  } catch (err) {
+    if (err.kind !== 'dirty') { toast(err.message, true, err.detail); return; }
+    // Like GitHub Desktop: offer to put the changes aside and switch anyway.
+    const pick = await choose('Suas alterações atrapalham a troca',
+      `Algumas alterações em ${S.info.branch} seriam sobrescritas por ${name}. Guarde-as (stash) para trazer de volta depois.`,
+      [['stash', 'Guardar e trocar', true], ['cancel', 'Cancelar']]);
+    if (pick !== 'stash') return;
+    const ok = await busy('Guardando e trocando…', async () => {
+      await call('repo:stashPush', S.repo, S.info.branch);
+      await call('repo:checkout', S.repo, name, isRemote);
+      return true;
+    });
+    if (ok) toast(`Alterações guardadas. Elas estão em "Alterações guardadas" quando você quiser.`);
+  }
+  S.sel.clear();
+  S.unchecked.clear();
   await refresh();
 }
 
-function openNewBranchModal() {
+function openNewBranchModal(fromCommit = null) {
   closePopovers();
   const name = el('input', { placeholder: 'minha-feature', autocomplete: 'off' });
   openModal('Nova branch',
-    [el('label', {}, `Criada a partir de ${S.info.branch || 'HEAD'}`, name)],
+    [el('label', {}, fromCommit ? `Criada a partir do commit ${fromCommit.short}` : `Criada a partir de ${S.info.branch || 'HEAD'}`, name)],
     'Criar branch',
     async () => {
       const n = name.value.trim().replace(/\s+/g, '-');
       if (!n) throw new Error('Dê um nome para a branch.');
-      await call('repo:createBranch', S.repo, n);
+      await call('repo:createBranch', S.repo, n, fromCommit?.sha);
       await refresh();
     });
   name.focus();
 }
 
+function openRenameBranchModal(old) {
+  const name = el('input', { value: old, autocomplete: 'off' });
+  openModal(`Renomear ${old}`, [el('label', {}, 'Novo nome', name)], 'Renomear', async () => {
+    const n = name.value.trim().replace(/\s+/g, '-');
+    if (!n || n === old) throw new Error('Escolha um nome diferente.');
+    await call('repo:renameBranch', S.repo, old, n);
+    await refresh();
+  });
+  name.select();
+}
+
+function openMergeModal(data) {
+  closePopovers();
+  const options = [...data.local.filter((b) => b !== S.info.branch), ...data.remote.map((r) => r)];
+  let picked = null;
+  const filter = el('input', { placeholder: 'Filtrar branches', autocomplete: 'off' });
+  const list = el('div', { class: 'repo-pick' });
+  const draw = () => {
+    const q = filter.value.toLowerCase();
+    list.replaceChildren(...options.filter((b) => b.toLowerCase().includes(q)).map((b) => el('button', {
+      type: 'button', class: `item${picked === b ? ' selected' : ''}`,
+      onclick: () => { picked = b; draw(); },
+    }, el('span', { class: 'grow', text: b }))));
+  };
+  filter.addEventListener('input', draw);
+  draw();
+  openModal(`Juntar em ${S.info.branch}`, [
+    el('p', { class: 'hint', text: 'Os commits da branch escolhida entram na branch atual. Se houver conflito, você escolhe a versão de cada arquivo.' }),
+    filter, list,
+  ], 'Juntar', async () => {
+    if (!picked) throw new Error('Escolha uma branch.');
+    closeModal();
+    await mergeBranch(picked);
+  });
+  filter.focus();
+}
+
+async function mergeBranch(name) {
+  const result = await busy(`Juntando ${name}…`, () => call('repo:merge', S.repo, name));
+  if (result === 'merged') toast(`${name} foi juntada em ${S.info.branch}.`);
+  if (result === 'conflicts') toast('Há conflitos. Resolva os arquivos marcados com ! e faça commit.', true);
+  await refresh();
+}
+
+// ---------- stash ----------
+async function stashChanges() {
+  const ok = await busy('Guardando alterações…', async () => { await call('repo:stashPush', S.repo, S.info.branch); return true; });
+  if (ok) toast('Alterações guardadas. A lista ficou limpa.');
+  S.sel.clear();
+  S.unchecked.clear();
+  showEmptyDiff();
+  await refresh();
+}
+
+function openStashModal() {
+  const rows = (S.info.stashes || []).map((s) => el('div', { class: 'stash-item' },
+    el('span', { class: 'grow' }, el('strong', { text: s.message.replace(/^On [^:]+: /, '') }), el('span', { class: 'muted', text: `${ago(s.date)} · ${s.ref}` })),
+    el('button', { type: 'button', text: 'Ver', onclick: async () => {
+      closeModal();
+      const text = await call('repo:stashShow', S.repo, s.ref);
+      $('diff').replaceChildren(el('div', { class: 'diff-header' }, el('span', { class: 'grow', text: `Alterações guardadas: ${s.message.replace(/^On [^:]+: /, '')}` })), renderDiff(text));
+    } }),
+    el('button', { type: 'button', class: 'primary', text: 'Restaurar', onclick: async () => {
+      closeModal();
+      const ok = await busy('Restaurando…', async () => { await call('repo:stashPop', S.repo, s.ref); return true; });
+      if (ok) toast('Alterações restauradas.');
+      await refresh();
+    } }),
+    el('button', { type: 'button', class: 'danger', text: 'Descartar', onclick: async () => {
+      const done = await busy('Descartando…', () => call('repo:stashDrop', S.repo, s.ref));
+      if (done) { closeModal(); await refresh(); }
+    } })));
+  openModal('Alterações guardadas', [
+    el('p', { class: 'hint', text: 'Alterações que você tirou da frente (stash). Restaurar traz de volta para a lista de alterações.' }),
+    ...rows,
+  ], 'Fechar', async () => {}, { cancel: false });
+}
+
 // ---------- sync ----------
-async function sync() {
+function syncAction() {
   const i = S.info;
-  if (!i?.remoteUrl || !i.branch) return;
+  if (!i?.remoteUrl || !i.branch) return null;
+  if (!i.upstream) return 'publish';
+  if (i.behind > 0 && i.ahead > 0) return 'diverged';
+  if (i.behind > 0) return 'pull';
+  if (i.ahead > 0) return 'push';
+  return 'fetch';
+}
+
+async function sync() {
+  const action = syncAction();
+  if (!action) return;
   const who = S.active;
-  let step;
-  if (i.branch && !i.upstream) step = ['Publicando', () => call('repo:push', S.repo, false)];
-  else if (i.behind > 0) step = ['Pull', () => call('repo:pull', S.repo)];
-  else if (i.ahead > 0) step = ['Push', () => call('repo:push', S.repo, true)];
-  else step = ['Fetch', () => call('repo:fetch', S.repo)];
-  const ok = await busy(`${step[0]} como ${who}…`, async () => { await step[1](); return true; });
-  if (ok) toast(`${step[0]} concluído como ${who}.`);
+  let ran = action;
+  if (action === 'diverged') {
+    ran = await call('menu:popup', [
+      { id: 'pull', label: 'Pull: juntar os commits do GitHub com os seus' },
+      { id: 'force', label: 'Forçar push: deixar o GitHub igual a esta branch' },
+    ]);
+    if (!ran) return;
+  }
+  const steps = {
+    publish: ['Publicando', () => call('repo:push', S.repo, false, false)],
+    pull: ['Pull', () => call('repo:pull', S.repo)],
+    push: ['Push', () => call('repo:push', S.repo, true, false)],
+    force: ['Push forçado', () => call('repo:push', S.repo, true, true)],
+    fetch: ['Fetch', () => call('repo:fetch', S.repo)],
+  };
+  const [label, fn] = steps[ran];
+  try {
+    const result = await busy(`${label} como ${who}…`, fn, { rethrow: true });
+    if (result !== false) toast(`${label} concluído como ${who}.`);
+  } catch (err) {
+    if (err.kind !== 'rejected' || (ran !== 'push' && ran !== 'publish')) toast(err.message, true, err.detail);
+    else {
+      const pick = await choose('O GitHub tem commits que você não tem',
+        'Faça Pull para juntar os commits do GitHub com os seus. Forçar substitui o que está no GitHub por esta branch.',
+        [['pull', 'Fazer Pull', true], ['force', 'Forçar push'], ['cancel', 'Cancelar']]);
+      if (pick === 'pull') await busy(`Pull como ${who}…`, () => call('repo:pull', S.repo));
+      if (pick === 'force') await busy(`Push forçado como ${who}…`, () => call('repo:push', S.repo, true, true));
+    }
+  }
+  S.lastFetch = Date.now();
   await loadRepos();
   await refresh();
 }
@@ -884,18 +1363,24 @@ async function sync() {
 // ---------- commit ----------
 async function commit(e) {
   e.preventDefault();
-  const files = S.info.files.filter((f) => !S.unchecked.has(f.path));
+  const files = commitFiles();
+  const amend = $('amend').checked;
   const summary = commitSummary();
   const description = $('description').value.trim();
-  if (!files.length || !summary) return;
-  const ok = await busy('Fazendo commit…', async () => {
-    await call('repo:commit', S.repo, files, description ? `${summary}\n\n${description}` : summary, S.info.initial, S.info.merging);
+  if ((!files.length && !amend) || !summary) return;
+  const ok = await busy(amend ? 'Emendando o commit…' : 'Fazendo commit…', async () => {
+    await call('repo:commit', S.repo, files, description ? `${summary}\n\n${description}` : summary,
+      { initial: S.info.initial, merging: S.info.merging, amend });
     return true;
   });
   if (!ok) return;
   $('summary').value = '';
   $('description').value = '';
-  toast(`Commit feito como ${activeAccount()?.identity.name}.`);
+  $('amend').checked = false;
+  $('amendHint').hidden = true;
+  S.sel.clear();
+  S.unchecked.clear();
+  toast(amend ? 'Commit emendado.' : `Commit feito como ${activeAccount()?.identity.name}.`);
   await loadRepos();
   showEmptyDiff();
   await refresh();
@@ -980,7 +1465,7 @@ function allApps() {
 
 function renderOpenButton() {
   const app = allApps().find((a) => a.id === S.apps?.openWith) || allApps()[0];
-  $('openBtn').textContent = app ? `Abrir em ${app.name}` : 'Abrir';
+  $('openLabel').textContent = app ? `Abrir em ${app.name}` : 'Abrir';
   $('openBtn').dataset.app = app?.id || '';
 }
 
@@ -1097,7 +1582,15 @@ function onUpdate(u) {
     else toast(`Baixando a versão ${u.next}…`);
   }
   const bar = $('updateHint');
-  bar.hidden = u.state !== 'ready';
+  bar.hidden = u.state !== 'ready' && u.state !== 'available';
+  if (u.state === 'available') {
+    bar.replaceChildren(
+      el('span', { class: 'grow', text: `A versão ${u.next} do GitSwitch está disponível.` }),
+      el('button', { class: 'primary', text: 'Baixar', onclick: () => call('update:download') }),
+      el('button', { class: 'ghost', text: 'Depois', onclick: () => { bar.hidden = true; } }),
+    );
+    return;
+  }
   if (u.state !== 'ready') return;
   bar.replaceChildren(
     el('span', { class: 'grow', text: `A versão ${u.next} do GitSwitch está pronta. Ela também é instalada quando você fechar o app.` }),
@@ -1134,7 +1627,8 @@ function openPopover(menu, anchor) {
   anchor.classList.add('open');
 }
 
-function openModal(title, body, okLabel, onOk, { cancel = true } = {}) {
+function openModal(title, body, okLabel, onOk, { cancel = true, wide = false } = {}) {
+  $('modalBody').classList.toggle('wide', wide);
   const err = el('p', { class: 'error-text' });
   err.hidden = true;
   const ok = el('button', { type: 'submit', class: 'primary', text: okLabel });
@@ -1162,6 +1656,9 @@ function openModal(title, body, okLabel, onOk, { cancel = true } = {}) {
 }
 
 function closeModal() {
+  const pending = S.onModalClose;
+  S.onModalClose = null;
+  pending?.();
   $('modal').hidden = true;
   $('modalBody').replaceChildren();
 }
@@ -1184,10 +1681,18 @@ function wire() {
   for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => setTab(t.dataset.tab));
   $('selectAll').addEventListener('change', (e) => {
     S.unchecked.clear();
+    S.sel.clear();
     if (!e.target.checked) for (const f of S.info.files) S.unchecked.add(f.path);
     renderFiles();
   });
   $('summary').addEventListener('input', updateCommitButton);
+  $('stashBtn').addEventListener('click', stashChanges);
+  $('amend').addEventListener('change', () => {
+    if ($('amend').checked) startAmend();
+    else { $('amendHint').hidden = true; updateCommitButton(); }
+  });
+  $('settingsBtn').addEventListener('click', (e) => { e.stopPropagation(); openSettings(); });
+  window.api.onProgress((p) => { if (!$('busy').hidden) $('busyText').textContent = p.text; });
   $('commitForm').addEventListener('submit', commit);
 
   document.addEventListener('click', (e) => {
@@ -1226,8 +1731,122 @@ function wire() {
   });
 }
 
+// ---------- settings ----------
+function applyAppearance() {
+  const { theme, tabSize } = S.settings;
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  document.documentElement.style.setProperty('--tab-size', String(tabSize || 4));
+}
+
+async function saveSetting(patch) {
+  S.settings = { ...S.settings, ...(await call('settings:set', patch)) };
+  applyAppearance();
+}
+
+function section(title, ...rows) {
+  return el('section', { class: 'settings-section' }, el('h3', { text: title }), ...rows);
+}
+
+function checkRow(label, key, hint) {
+  const box = el('input', { type: 'checkbox' });
+  box.checked = Boolean(S.settings[key]);
+  box.addEventListener('change', () => saveSetting({ [key]: box.checked }));
+  return el('label', { class: 'set-row' }, box, el('span', { class: 'grow' }, el('span', { text: label }), hint ? el('small', { text: hint }) : null));
+}
+
+function selectRow(label, key, options, toValue = (v) => v) {
+  const sel = el('select', {}, options.map(([v, t]) => el('option', { value: String(v), text: t })));
+  sel.value = String(S.settings[key]);
+  sel.addEventListener('change', () => saveSetting({ [key]: toValue(sel.value) }));
+  return el('label', { class: 'set-row select' }, el('span', { class: 'grow', text: label }), sel);
+}
+
+async function openSettings() {
+  closePopovers();
+  S.settings = await call('settings:get');
+  if (!S.apps) await loadApps().catch(() => {});
+  const gName = el('input', { value: S.settings.globalIdentity.name || '' });
+  const gEmail = el('input', { value: S.settings.globalIdentity.email || '' });
+  const appSel = el('select', {}, allApps().map((a) => el('option', { value: a.id, text: a.name })));
+  appSel.value = S.apps?.openWith || '';
+  appSel.addEventListener('change', async () => {
+    S.apps.openWith = appSel.value;
+    renderOpenButton();
+    await call('apps:setDefault', appSel.value);
+  });
+  const sync = el('input', { type: 'checkbox' });
+  sync.checked = S.syncGlobal;
+  sync.addEventListener('change', async () => {
+    await busy('Salvando…', () => call('accounts:setSyncGlobal', sync.checked));
+    S.syncGlobal = sync.checked;
+  });
+
+  openModal('Configurações', [
+    section('Contas',
+      el('div', { class: 'set-buttons' },
+        el('button', { type: 'button', text: 'Pastas das contas…', onclick: () => openFoldersModal() }),
+        el('button', { type: 'button', text: 'Nome/e-mail dos commits…', disabled: !S.active, onclick: openIdentityModal }),
+        el('button', { type: 'button', text: 'Adicionar conta', onclick: addAccount })),
+      el('label', { class: 'set-row' }, sync, el('span', { class: 'grow' },
+        el('span', { text: 'Trocar também no terminal' }),
+        el('small', { text: 'Ao trocar de conta, roda gh auth switch e muda o nome/e-mail do Git global.' })))),
+    section('Git global',
+      el('p', { class: 'hint', text: 'Usado por outros programas e pelo terminal. Os commits feitos no GitSwitch usam o nome e o e-mail da conta escolhida.' }),
+      el('div', { class: 'set-grid' }, el('label', {}, 'Nome', gName), el('label', {}, 'E-mail', gEmail)),
+      el('div', { class: 'set-buttons' }, el('button', {
+        type: 'button', text: 'Salvar no Git global',
+        onclick: async () => {
+          const ok = await busy('Salvando…', async () => { await call('settings:setGlobalIdentity', { name: gName.value.trim(), email: gEmail.value.trim() }); return true; });
+          if (ok) toast('Git global atualizado.');
+        },
+      }))),
+    section('Abrir em',
+      el('label', { class: 'set-row select' }, el('span', { class: 'grow', text: 'App padrão do botão Abrir' }), appSel),
+      el('div', { class: 'set-buttons' }, el('button', { type: 'button', text: 'Adicionar app…', onclick: openAddAppModal }))),
+    section('Aparência',
+      selectRow('Tema', 'theme', [['system', 'Igual ao Windows'], ['light', 'Claro'], ['dark', 'Escuro']]),
+      selectRow('Largura do Tab no diff', 'tabSize', [[2, '2 espaços'], [4, '4 espaços'], [8, '8 espaços']], Number)),
+    section('Diff',
+      checkRow('Ocultar mudanças só de espaço em branco', 'hideWhitespace', 'Com isso ligado não dá para escolher linhas para o commit.')),
+    section('Sincronização',
+      selectRow('Buscar alterações do GitHub (fetch) automaticamente', 'autoFetchMinutes',
+        [[0, 'Nunca'], [1, 'A cada minuto'], [5, 'A cada 5 minutos'], [15, 'A cada 15 minutos'], [30, 'A cada 30 minutos']], Number)),
+    section('Avisos',
+      checkRow('Confirmar antes de descartar alterações', 'confirmDiscard'),
+      checkRow('Confirmar antes de forçar push', 'confirmForcePush'),
+      checkRow('Confirmar antes de tirar um repositório da lista', 'confirmRemoveRepo')),
+    section('Atualizações',
+      checkRow('Baixar atualizações automaticamente', 'autoUpdate', 'Desligado, o GitSwitch só avisa que existe uma versão nova.'),
+      el('div', { class: 'set-buttons' },
+        el('span', { class: 'grow muted', text: updateLine() }),
+        el('button', { type: 'button', text: 'Procurar atualização', disabled: S.update?.state === 'dev', onclick: checkForUpdate }))),
+    section('Avançado',
+      el('div', { class: 'set-buttons' },
+        el('span', { class: 'grow muted', text: S.settings.dataDir }),
+        el('button', { type: 'button', text: 'Abrir pasta de dados', onclick: () => call('shell:folder', S.settings.dataDir) }))),
+  ], 'Fechar', async () => {}, { cancel: false, wide: true });
+}
+
+// Background fetch, like GitHub Desktop, so ahead/behind stays current.
+function startAutoFetch() {
+  setInterval(async () => {
+    const minutes = S.settings.autoFetchMinutes;
+    if (!minutes || !S.repo || !S.info?.remoteUrl || !$('busy').hidden) return;
+    if (Date.now() - S.lastFetch < minutes * 60 * 1000) return;
+    S.lastFetch = Date.now();
+    try {
+      await call('repo:fetch', S.repo, true);
+      if ($('modal').hidden) refresh({ quiet: true });
+    } catch { /* offline or no access: try again next round */ }
+  }, 30 * 1000);
+}
+
 async function start() {
   wire();
+  S.settings = await call('settings:get').catch(() => ({}));
+  applyAppearance();
+  startAutoFetch();
   window.api.onStoreError((message) => toast(message, true));
   window.api.onUpdate(onUpdate);
   call('update:status').then(onUpdate).catch(() => {});

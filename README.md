@@ -14,6 +14,10 @@ Cliente Git estilo GitHub Desktop em que você troca de conta do GitHub escolhen
 - **Pasta → Mover**: move o repositório para a pasta da conta ou para qualquer outra pasta.
 - **Pasta → Juntar com uma pasta que já existe**: liga uma pasta sua a este repositório do GitHub sem apagar nada. Se a pasta não tem histórico, ela passa a seguir o GitHub e as diferenças aparecem em Alterações. Se tem, os dois históricos são unidos e, em caso de conflito, você escolhe a versão de cada arquivo. Repositórios só locais têm **Conectar ao GitHub…** no mesmo menu.
 
+- **No dia a dia**: escolha linhas ou trechos do diff para o commit, guarde alterações (stash), desfaça ou emende o último commit, reverta commits, junte branches e resolva conflitos. O botão direito abre mais ações em arquivos, commits e branches. A engrenagem no canto abre as **Configurações** (tema, Git global, avisos, fetch automático, atualizações).
+
+A comparação detalhada com o GitHub Desktop está em [docs/PARIDADE.md](docs/PARIDADE.md).
+
 ## Rodar
 
 ```bash

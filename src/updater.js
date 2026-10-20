@@ -5,6 +5,7 @@ const { app } = require('electron');
 const CHECK_EVERY = 4 * 60 * 60 * 1000;
 
 let autoUpdater = null;
+let autoDownload = true;
 let state = { state: 'idle', version: app.getVersion() };
 
 function setup(send) {
@@ -17,11 +18,11 @@ function setup(send) {
     return;
   }
   ({ autoUpdater } = require('electron-updater'));
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = autoDownload;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('checking-for-update', () => update({ state: 'checking' }));
   autoUpdater.on('update-not-available', () => update({ state: 'latest' }));
-  autoUpdater.on('update-available', (info) => update({ state: 'downloading', next: info.version, percent: 0 }));
+  autoUpdater.on('update-available', (info) => update({ state: autoDownload ? 'downloading' : 'available', next: info.version, percent: 0 }));
   autoUpdater.on('download-progress', (p) => update({ state: 'downloading', percent: Math.round(p.percent) }));
   autoUpdater.on('update-downloaded', (info) => update({ state: 'ready', next: info.version }));
   autoUpdater.on('error', (err) => update({ state: 'error', message: err.message }));
@@ -37,9 +38,19 @@ async function check() {
   return state;
 }
 
+// With auto-download off, an available update waits for the user to ask.
+function setAutoDownload(on) {
+  autoDownload = on;
+  if (autoUpdater) autoUpdater.autoDownload = on;
+}
+
+function download() {
+  if (autoUpdater && state.state === 'available') autoUpdater.downloadUpdate().catch(() => {});
+}
+
 function install() {
   // Silent install, then start the new version.
   if (autoUpdater && state.state === 'ready') autoUpdater.quitAndInstall(true, true);
 }
 
-module.exports = { setup, check, install, status: () => state };
+module.exports = { setup, check, install, download, setAutoDownload, status: () => state };

@@ -4,11 +4,19 @@ contextBridge.exposeInMainWorld('api', {
   // Calls a main-process handler; throws with its message on failure.
   async call(name, ...args) {
     const res = await ipcRenderer.invoke(name, ...args);
-    if (!res.ok) throw new Error(res.error);
+    if (!res.ok) {
+      const err = new Error(res.error);
+      err.detail = res.detail;
+      err.kind = res.kind;
+      throw err;
+    }
     return res.value;
   },
   onFocus(fn) {
     ipcRenderer.on('window:focus', () => fn());
+  },
+  onProgress(fn) {
+    ipcRenderer.on('progress', (_e, p) => fn(p));
   },
   onUpdate(fn) {
     ipcRenderer.on('update:state', (_e, s) => fn(s));

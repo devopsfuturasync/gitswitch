@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeTheme } = require('electron');
 const { Store } = require('./store');
 const accounts = require('./accounts');
 const github = require('./github');
@@ -12,6 +12,21 @@ const updater = require('./updater');
 
 let win;
 let store;
+
+// Streams git progress ("Push: Enviando objetos 40%") to the window.
+const progress = (p) => win?.webContents.send('progress', p);
+
+const DEFAULT_SETTINGS = {
+  theme: 'system',          // 'system' | 'light' | 'dark'
+  hideWhitespace: false,
+  tabSize: 4,
+  confirmDiscard: true,
+  confirmForcePush: true,
+  confirmRemoveRepo: false,
+  autoFetchMinutes: 5,      // 0 = off
+  autoUpdate: true,
+};
+const settings = () => ({ ...DEFAULT_SETTINGS, ...store.get('settings') });
 
 const samePath = (a, b) => Boolean(a && b) && path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
 
@@ -192,7 +207,12 @@ const handlers = {
     store.set('selectedRepo', repoPath);
   },
   async 'repos:remove'(repoPath) {
+    if (settings().confirmRemoveRepo) {
+      const choice = await ask('question', `Tirar ${path.basename(repoPath)} da lista?`, 'A pasta continua no computador.', ['Tirar da lista', 'Cancelar']);
+      if (choice !== 0) return false;
+    }
     removeRepo(repoPath);
+    return true;
   },
   async 'repos:addMany'(list) {
     for (const r of list) addRepo(r.path, r.account, { select: false });
@@ -228,7 +248,7 @@ const handlers = {
     const c = await activeCredentials();
     const dest = path.join(parentDir, name);
     await fs.mkdir(parentDir, { recursive: true });
-    await git.clone(url, dest, c);
+    await git.clone(url, dest, c, progress);
     store.set('cloneDir', parentDir);
     if (makeDefault) setAccountDir(c.login, parentDir);
     return addRepo(dest, c.login);
@@ -236,24 +256,28 @@ const handlers = {
 
   // --- working with a repository
   async 'repo:info'(repo) {
-    const [status, remoteUrl, merging] = await Promise.all([git.status(repo), git.remoteUrl(repo), git.isMerging(repo)]);
-    return { ...status, remoteUrl, merging };
+    const [status, remoteUrl, merging, stashes, head] = await Promise.all([
+      git.status(repo), git.remoteUrl(repo), git.isMerging(repo), git.stashList(repo), git.headCommit(repo),
+    ]);
+    return { ...status, remoteUrl, merging, stashes, head };
   },
   async 'repo:diff'(repo, file, initial) {
-    return git.diff(repo, file, initial);
+    return git.diff(repo, file, { initial, hideWhitespace: settings().hideWhitespace });
   },
-  async 'repo:commit'(repo, files, message, initial, merging) {
+  async 'repo:commit'(repo, files, message, opts) {
     const c = await activeCredentials();
-    await git.commit(repo, c, files, message, initial, merging);
+    await git.commit(repo, c, files, message, opts);
     rememberAccount(repo, c.login);
   },
   async 'repo:discard'(repo, files, initial) {
-    const names = files.map((f) => f.path);
-    const choice = await ask('warning',
-      names.length === 1 ? `Descartar as alterações em ${names[0]}?` : `Descartar as alterações em ${names.length} arquivos?`,
-      'Arquivos novos vão para a Lixeira. Alterações em arquivos existentes são perdidas.',
-      ['Descartar', 'Cancelar']);
-    if (choice !== 0) return false;
+    if (settings().confirmDiscard) {
+      const names = files.map((f) => f.path);
+      const choice = await ask('warning',
+        names.length === 1 ? `Descartar as alterações em ${names[0]}?` : `Descartar as alterações em ${names.length} arquivos?`,
+        'A versão atual dos arquivos vai para a Lixeira, de onde dá para recuperar.',
+        ['Descartar', 'Cancelar']);
+      if (choice !== 0) return false;
+    }
     await git.discard(repo, files, initial, (p) => shell.trashItem(p));
     return true;
   },
@@ -267,7 +291,17 @@ const handlers = {
     return git.log(repo);
   },
   async 'repo:show'(repo, sha) {
-    return git.show(repo, sha);
+    return git.show(repo, sha, settings().hideWhitespace);
+  },
+  async 'repo:lastMessage'(repo) {
+    return git.lastMessage(repo);
+  },
+  async 'repo:undo'(repo) {
+    return git.undoLastCommit(repo);
+  },
+  async 'repo:revert'(repo, sha, parents) {
+    const c = await activeCredentials();
+    await git.revert(repo, c, sha, parents);
   },
   async 'repo:branches'(repo) {
     return git.branches(repo);
@@ -275,22 +309,70 @@ const handlers = {
   async 'repo:checkout'(repo, name, isRemote) {
     await git.checkout(repo, name, isRemote);
   },
-  async 'repo:createBranch'(repo, name) {
-    await git.createBranch(repo, name);
+  async 'repo:checkoutCommit'(repo, sha) {
+    await git.checkoutCommit(repo, sha);
   },
-  async 'repo:fetch'(repo) {
+  async 'repo:createBranch'(repo, name, from) {
+    await git.createBranch(repo, name, from);
+  },
+  async 'repo:renameBranch'(repo, from, to) {
+    await git.renameBranch(repo, from, to);
+  },
+  async 'repo:deleteBranch'(repo, name) {
+    try {
+      await git.deleteBranch(repo, name, false);
+    } catch (err) {
+      if (err.kind !== 'not-merged') throw err;
+      const choice = await ask('warning', `A branch ${name} tem commits que não estão em nenhuma outra.`,
+        'Apagar mesmo assim? Esses commits deixam de aparecer.', ['Apagar mesmo assim', 'Cancelar']);
+      if (choice !== 0) return false;
+      await git.deleteBranch(repo, name, true);
+    }
+    return true;
+  },
+  async 'repo:merge'(repo, branch) {
     const c = await activeCredentials();
-    await git.fetchAll(repo, c);
+    return git.merge(repo, c, branch);
+  },
+  async 'repo:fetch'(repo, background) {
+    const c = await activeCredentials();
+    await git.fetchAll(repo, c, background ? undefined : progress);
   },
   async 'repo:pull'(repo) {
     const c = await activeCredentials();
-    await git.pull(repo, c);
+    await git.pull(repo, c, progress);
     rememberAccount(repo, c.login);
   },
-  async 'repo:push'(repo, hasUpstream) {
+  async 'repo:push'(repo, hasUpstream, force) {
     const c = await activeCredentials();
-    await git.push(repo, c, hasUpstream);
+    if (force && settings().confirmForcePush) {
+      const choice = await ask('warning', 'Forçar o envio?',
+        'A branch no GitHub vai ficar igual à sua, e os commits que só existem lá serão substituídos. O envio é cancelado se alguém mandou algo novo desde o seu último Fetch.',
+        ['Forçar envio', 'Cancelar']);
+      if (choice !== 0) return false;
+    }
+    await git.push(repo, c, { upstream: hasUpstream, force }, progress);
     rememberAccount(repo, c.login);
+    return true;
+  },
+  async 'repo:stashPush'(repo, branch) {
+    const c = await activeCredentials();
+    await git.stashPush(repo, c, `GitSwitch: ${branch || 'alterações'}`);
+  },
+  async 'repo:stashPop'(repo, ref) {
+    await git.stashPop(repo, ref);
+  },
+  async 'repo:stashDrop'(repo, ref) {
+    const choice = await ask('warning', 'Descartar estas alterações guardadas?', 'Elas não vão para a Lixeira.', ['Descartar', 'Cancelar']);
+    if (choice !== 0) return false;
+    await git.stashDrop(repo, ref);
+    return true;
+  },
+  async 'repo:stashShow'(repo, ref) {
+    return git.stashShow(repo, ref);
+  },
+  async 'repo:ignore'(repo, pattern) {
+    await git.ignore(repo, pattern);
   },
 
   // --- moving and linking folders
@@ -353,6 +435,9 @@ const handlers = {
     await apps.launch(target, dir);
     store.set('openWith', id);
   },
+  async 'apps:setDefault'(id) {
+    store.set('openWith', id);
+  },
   async 'apps:addCustom'(entry) {
     const item = { ...entry, id: `custom-${Date.now()}` };
     store.set('customApps', [...store.get('customApps'), item]);
@@ -378,8 +463,42 @@ const handlers = {
   async 'update:check'() {
     return updater.check();
   },
+  async 'update:download'() {
+    updater.download();
+  },
   async 'update:install'() {
     updater.install();
+  },
+
+  // --- settings
+  async 'settings:get'() {
+    return { ...settings(), globalIdentity: await git.globalIdentity(), dataDir: app.getPath('userData'), version: app.getVersion() };
+  },
+  async 'settings:set'(patch) {
+    store.set('settings', { ...settings(), ...patch });
+    applySettings();
+    return settings();
+  },
+  async 'settings:setGlobalIdentity'(identity) {
+    await git.setGlobalIdentity(identity);
+  },
+
+  // --- native bits
+  // items: [{ id, label, enabled?, type? }] -> the clicked id, or null.
+  async 'menu:popup'(items) {
+    return new Promise((resolve) => {
+      let picked = null;
+      const menu = Menu.buildFromTemplate(items.map((it) => (it.type === 'separator'
+        ? { type: 'separator' }
+        : { label: it.label, enabled: it.enabled !== false, click: () => { picked = it.id; } })));
+      menu.popup({ window: win, callback: () => setTimeout(() => resolve(picked), 0) });
+    });
+  },
+  async 'clipboard:write'(text) {
+    clipboard.writeText(String(text));
+  },
+  async 'shell:showItem'(p) {
+    shell.showItemInFolder(p);
   },
 
   // --- shell
@@ -396,9 +515,15 @@ for (const [name, fn] of Object.entries(handlers)) {
     try {
       return { ok: true, value: await fn(...args) };
     } catch (err) {
-      return { ok: false, error: err.message };
+      return { ok: false, error: err.message, detail: err.detail, kind: err.kind };
     }
   });
+}
+
+function applySettings() {
+  const s = settings();
+  nativeTheme.themeSource = s.theme;
+  updater.setAutoDownload(s.autoUpdate);
 }
 
 function createWindow() {
@@ -436,6 +561,7 @@ app.whenReady().then(() => {
     win.webContents.send('store:error', `Não consegui salvar as configurações em ${store.file}: ${err.message}`);
   });
   createWindow();
+  applySettings();
   updater.setup((s) => win?.webContents.send('update:state', s));
   apps.detect().catch(() => {});
 });
