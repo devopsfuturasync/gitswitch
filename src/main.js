@@ -12,6 +12,7 @@ const scanner = require('./scanner');
 const apps = require('./apps');
 const updater = require('./updater');
 const install = require('./install');
+const mcpClients = require('./mcp-clients');
 const ai = require('./ai');
 const scannerParse = require('./scanner').parseGithub;
 const { switchAccount, rememberRepoForAccount } = require('./switch');
@@ -639,6 +640,15 @@ const handlers = {
   },
   async 'cli:installSkill'() {
     return install.installSkill();
+  },
+  async 'mcp:status'() {
+    return mcpClients.mcpStatus();
+  },
+  async 'mcp:install'(ids) {
+    return mcpClients.installMcp(ids);
+  },
+  async 'mcp:remove'(ids) {
+    return mcpClients.removeMcp(ids);
   },
 
   // --- native bits

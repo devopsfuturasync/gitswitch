@@ -26,6 +26,7 @@ Legenda: ✅ tem · 🟡 parcial · ⬜ ainda não
 | Várias contas no github.com, troca em um clique | ⬜ (uma por servidor) | ✅ |
 | Pasta por conta, detecção de repos no disco | ⬜ | ✅ |
 | Comando de terminal para agentes de IA (JSON, conta certa no git e no gh) | ⬜ | ✅ `gitswitch` |
+| Servidor MCP para apps de IA (Claude, Codex, Cursor, VS Code…) | ⬜ | ✅ `gitswitch mcp`, registrado pelas Configurações |
 | Idiomas | ✅ (vários) | ✅ português, inglês e espanhol, pelo idioma do sistema |
 | macOS e Linux | ✅ macOS e Linux (comunidade) | ✅ `.dmg`/`.zip` (Intel e Apple Silicon), AppImage e `.deb` |
 | Atualização automática no macOS | ✅ (app assinado) | ⬜ precisa de certificado Apple Developer |

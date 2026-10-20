@@ -1934,7 +1934,7 @@ function aiProviderRow() {
   const state = el('small', { text: _t('verificando…') });
   call('ai:providers').then((p) => {
     const bits = [
-      _t('Claude Code: {0}', p.claude.available ? 'encontrado' : _t('não encontrado')),
+      _t('Claude Code: {0}', p.claude.available ? _t('encontrado') : _t('não encontrado')),
       `Ollama: ${p.ollama.available ? `${p.ollama.models.length} modelo(s)` : _t('não está rodando')}`,
     ];
     state.textContent = bits.join(' · ');
@@ -2188,7 +2188,34 @@ async function renderCliState() {
   const node = $('cliState');
   if (!s || !node) return;
   const skills = s.skill.filter((x) => x.installed).length;
-  node.textContent = _t('Comando: {0} · Skill: {1}', s.cli.installed ? 'instalado' : _t('não instalado'), skills ? 'instalada' : _t('não instalada'));
+  node.textContent = _t('Comando: {0} · Skill: {1}', s.cli.installed ? _t('instalado') : _t('não instalado'), skills ? _t('instalada') : _t('não instalada'));
+}
+
+// One row per AI app found on this computer, to add or remove the MCP server.
+async function renderMcpList() {
+  const node = $('mcpList');
+  const list = await call('mcp:status').catch(() => null);
+  if (!node || !list) return;
+  const found = list.filter((c) => c.detected);
+  node.replaceChildren(...(found.length ? found.map((c) => el('div', { class: 'set-buttons mcp-row' },
+    el('span', { class: 'grow', title: c.file }, el('span', { text: c.name }), ' ',
+      el('small', { class: 'muted', text: c.installed ? _t('adicionado') : _t('não adicionado') })),
+    el('button', { type: 'button', text: c.installed ? _t('Remover') : _t('Adicionar'), onclick: () => changeMcp(!c.installed, [c.id]) })))
+    : [el('p', { class: 'hint', text: _t('Nenhum app de IA encontrado.') })]));
+}
+
+async function changeMcp(add, ids) {
+  const results = await busy(add ? _t('Instalando…') : _t('Removendo…'), () => call(add ? 'mcp:install' : 'mcp:remove', ids));
+  if (!results) return;
+  const done = results.filter((r) => r.result === 'installed' || r.result === 'removed').map((r) => r.name);
+  const lines = [
+    done.length ? (add ? _t('Servidor MCP adicionado em {0}. Reinicie o app para ver as ferramentas.', done.join(', ')) : _t('Servidor MCP removido de {0}.', done.join(', '))) : '',
+    ...results.filter((r) => r.result === 'close-app').map((r) => _t('Feche o {0} e tente de novo: ele reescreve a configuração ao fechar.', r.name)),
+    ...results.filter((r) => r.result === 'unreadable').map((r) => _t('A configuração do {0} tem comentários ou não é JSON válido; não foi alterada.', r.name)),
+    ...results.filter((r) => r.result === 'failed').map((r) => _t('Falhou em {0}: {1}', r.name, r.error)),
+  ].filter(Boolean);
+  toast(lines.join('\n') || _t('Nenhum app de IA encontrado.'), !done.length);
+  renderMcpList();
 }
 
 async function openSettings() {
@@ -2262,7 +2289,10 @@ async function openSettings() {
         el('button', { type: 'button', text: _t('Instalar skill para IA'), onclick: async () => {
           const r = await busy(_t('Instalando…'), () => call('cli:installSkill'));
           if (r) { toast(_t('Skill instalada em {0}', r.installed.join(', '))); renderCliState(); }
-        } }))),
+        } })),
+      el('p', { class: 'hint', text: _t('Servidor MCP: apps de IA (Claude Code, Codex, Cursor, VS Code…) usam o GitSwitch como ferramentas próprias para trocar de conta, ver o status, fazer commit, push e pull requests com a conta certa.') }),
+      el('div', { id: 'mcpList', class: 'mcp-list' }, el('span', { class: 'muted', text: '…' })),
+      el('div', { class: 'set-buttons' }, el('button', { type: 'button', text: _t('Adicionar em todos'), onclick: () => changeMcp(true) }))),
     section(_t('IA'),
       el('p', { class: 'hint', text: _t('O botão ✨ ao lado do resumo escreve a mensagem do commit a partir das alterações selecionadas, usando uma IA que já está no seu computador.') }),
       aiProviderRow(),
@@ -2284,6 +2314,7 @@ async function openSettings() {
         el('button', { type: 'button', text: _t('Abrir pasta de dados'), onclick: () => call('shell:folder', S.settings.dataDir) }))),
   ], _t('Fechar'), async () => {}, { cancel: false, wide: true });
   renderCliState();
+  renderMcpList();
 }
 
 // Background fetch, like GitHub Desktop, so ahead/behind stays current.

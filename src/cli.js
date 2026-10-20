@@ -19,6 +19,8 @@ const git = require('./git');
 const scanner = require('./scanner');
 const apps = require('./apps');
 const install = require('./install');
+const mcpClients = require('./mcp-clients');
+const github = require('./github');
 const tools = require('./tools');
 const { switchAccount } = require('./switch');
 
@@ -41,7 +43,10 @@ const COMMANDS = {
   folder: { usage: _t('gitswitch folder <login> [caminho]'), summary: _t('Mostra ou define a pasta de uma conta') },
   detect: { usage: 'gitswitch detect [--add]', summary: _t('Procura repositórios no disco por conta; --add adiciona os que faltam') },
   open: { usage: _t('gitswitch open [caminho] [--app id]'), summary: _t('Abre o repositório no app padrão (ou em --app)') },
-  install: { usage: 'gitswitch install [--no-skill]', summary: _t('Coloca o gitswitch no PATH e instala a skill para agentes de IA') },
+  install: { usage: 'gitswitch install [--no-skill] [--mcp]', summary: _t('Coloca o gitswitch no PATH e instala a skill para agentes de IA') },
+  pr: { usage: 'gitswitch pr [path]', summary: 'Pull request of the current branch, its checks, and the open PRs' },
+  'pr-create': { usage: 'gitswitch pr-create --title "…" [--body "…"] [--base main] [--draft] [-C path]', summary: 'Pushes the branch if needed and opens a pull request as the right account' },
+  mcp: { usage: 'gitswitch mcp [status | add | remove] [--client id,id]', summary: 'Runs GitSwitch as an MCP server over stdio; status/add/remove manage it in AI apps (Claude Code, Codex, Cursor, VS Code…)' },
   help: { usage: _t('gitswitch help [comando]'), summary: _t('Esta ajuda (com --json, a lista de comandos para máquinas)') },
 };
 
@@ -54,7 +59,7 @@ class CliError extends Error {
 }
 
 // ---------- arguments ----------
-const VALUE_FLAGS = new Set(['as', 'account', 'dir', 'app', 'message']);
+const VALUE_FLAGS = new Set(['as', 'account', 'dir', 'app', 'message', 'title', 'body', 'base', 'client']);
 
 function parse(argv) {
   const out = { pos: [], opts: {}, rest: null };
@@ -84,8 +89,12 @@ function parse(argv) {
 
 // ---------- output ----------
 let JSON_MODE = false;
+// Set by the MCP server: commands hand their result here instead of printing
+// (stdout is the protocol channel there).
+let SINK = null;
 
 function print(data, human) {
+  if (SINK) { SINK.data = data; return; }
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...data }, null, 2)}\n`);
   else if (human) process.stdout.write(`${typeof human === 'function' ? human(data) : human}\n`);
 }
@@ -380,10 +389,66 @@ const run = {
   async install({ opts }) {
     const cli = await install.installCli();
     const skill = opts['no-skill'] ? null : install.installSkill();
-    print({ cli, skill }, (d) => [
+    const mcp = opts.mcp ? await mcpClients.installMcp() : null;
+    print({ cli, skill, ...(mcp ? { mcp } : {}) }, (d) => [
       _t('comando instalado em {0} ({1})', d.cli.bin, d.cli.path === 'present' ? _t('já estava no PATH') : _t('adicionado ao PATH: abra um terminal novo')),
       d.skill ? _t('skill para IA instalada em: {0}', d.skill.installed.join(', ')) : '',
+      ...(d.mcp || []).map(mcpLine),
     ].filter(Boolean).join('\n'));
+  },
+
+  async pr({ pos, opts }) {
+    const root = await needRepo(opts.C || pos[0] || process.cwd());
+    const who = await resolve(root, opts.as);
+    const creds = await accounts.credentials(who.account.login, overrides());
+    const gh = scanner.parseGithub(await git.remoteUrl(root));
+    if (!gh) throw new CliError(_t('Esse repositório não está no GitHub.'), 'notfound');
+    const st = await git.status(root);
+    const info = await github.repoInfo(creds.token, gh.owner, gh.repo).catch(() => null);
+    const pull = st.branch ? await github.pullForBranch(creds.token, gh.owner, gh.repo, st.branch) : null;
+    const head = await git.headCommit(root);
+    const sha = pull?.headSha || (st.upstream && head?.sha);
+    const checks = sha ? await github.checks(creds.token, gh.owner, gh.repo, sha) : null;
+    const open = await github.openPulls(creds.token, gh.owner, gh.repo);
+    print({ account: creds.login, repo: `${gh.owner}/${gh.repo}`, branch: st.branch, defaultBranch: info?.defaultBranch, pr: pull, checks, open },
+      (d) => [
+        d.pr ? `#${d.pr.number} ${d.pr.title} (${d.pr.head} → ${d.pr.base})` : `no open PR for ${d.branch}`,
+        d.checks ? `checks: ${d.checks.state}${d.checks.items.filter((i) => i.state === 'failure').map((i) => ` ✗ ${i.name}`).join('')}` : '',
+        ...d.open.filter((p) => p.number !== d.pr?.number).map((p) => `  #${p.number} ${p.title} (${p.head})`),
+      ].filter(Boolean).join('\n'));
+  },
+
+  async 'pr-create'({ pos, opts }) {
+    if (!opts.title) throw new CliError('Missing --title.');
+    const root = await needRepo(opts.C || pos[0] || process.cwd());
+    const who = await resolve(root, opts.as);
+    const creds = await accounts.credentials(who.account.login, overrides());
+    const gh = scanner.parseGithub(await git.remoteUrl(root));
+    if (!gh) throw new CliError(_t('Esse repositório não está no GitHub.'), 'notfound');
+    const st = await git.status(root);
+    if (!st.branch) throw new CliError(_t('Você está fora de uma branch (HEAD destacado). Crie uma branch antes de enviar.'));
+    if (!st.upstream || st.ahead) await git.push(root, creds, { upstream: Boolean(st.upstream) }, progress).finally(endProgress);
+    const base = opts.base || (await github.repoInfo(creds.token, gh.owner, gh.repo)).defaultBranch;
+    const pull = await github.createPull(creds.token, gh.owner, gh.repo, {
+      title: opts.title, body: opts.body || '', head: st.branch, base, draft: Boolean(opts.draft),
+    });
+    rememberRepo(root, creds.login);
+    print({ account: creds.login, pr: pull }, (d) => `#${d.pr.number} ${d.pr.url}`);
+  },
+
+  async mcp({ pos, opts }) {
+    const action = pos[0];
+    if (!action) { await require('./mcp').serve({ run, capture, version: VERSION }); return; }
+    const ids = opts.client ? String(opts.client).split(',').map((x) => x.trim()).filter(Boolean) : undefined;
+    if (action === 'status') {
+      const clients = await mcpClients.mcpStatus();
+      print({ server: mcpClients.serverEntry(), clients }, (d) => d.clients
+        .map((c) => `${c.installed ? '✓' : c.detected ? '·' : ' '} ${c.name.padEnd(15)} ${c.installed ? 'installed' : c.detected ? 'not installed' : 'not found'}  ${c.file}`).join('\n'));
+      return;
+    }
+    if (action !== 'add' && action !== 'remove') throw new CliError(`Unknown action: ${action} (use status, add or remove)`);
+    const results = action === 'add' ? await mcpClients.installMcp(ids) : await mcpClients.removeMcp(ids);
+    print({ results }, (d) => (d.results.length ? d.results.map(mcpLine).join('\n') : 'No AI apps found.'));
   },
 
   async help({ pos }) {
@@ -414,15 +479,23 @@ async function passthrough(tool, rest, opts, build) {
   const child = spawn(tools.bin(tool), args, {
     cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...env },
-    stdio: ['inherit', 'pipe', 'pipe'],
+    stdio: [SINK ? 'ignore' : 'inherit', 'pipe', 'pipe'],
   });
   let stdout = '';
   let stderr = '';
-  child.stdout.on('data', (d) => { stdout += d; if (!JSON_MODE) process.stdout.write(d); });
-  child.stderr.on('data', (d) => { stderr += d; if (!JSON_MODE) process.stderr.write(d); });
+  const echo = !JSON_MODE && !SINK;
+  child.stdout.on('data', (d) => { stdout += d; if (echo) process.stdout.write(d); });
+  child.stderr.on('data', (d) => { stderr += d; if (echo) process.stderr.write(d); });
   const code = await new Promise((res, rej) => { child.on('error', rej); child.on('close', res); });
   if (code === 0 && who.root && tool === 'git' && /^(push|commit|pull)$/.test(rest[0])) rememberRepo(who.root, creds.login);
   const hint = code === 0 ? null : git.friendly({ output: stderr || stdout });
+  if (SINK) {
+    SINK.data = {
+      ok: code === 0, code, account: creds.login, accountReason: who.reason, stdout, stderr,
+      ...(hint ? { error: hint.message, kind: hint.kind } : {}),
+    };
+    return;
+  }
   if (JSON_MODE) {
     process.stdout.write(`${JSON.stringify({
       ok: code === 0, code, account: creds.login, accountReason: who.reason, stdout, stderr,
@@ -432,6 +505,35 @@ async function passthrough(tool, rest, opts, build) {
     process.stderr.write(`gitswitch [${creds.login}]: ${hint.message}\n`);
   }
   process.exitCode = code === 0 ? 0 : (KIND_EXIT[hint?.kind] ?? EXIT.failed);
+}
+
+const MCP_RESULT = {
+  installed: 'MCP server added', removed: 'MCP server removed', 'not-found': 'not installed on this computer',
+  'close-app': 'close the app and try again (it rewrites its config when it quits)', unreadable: 'config has comments or is invalid JSON; left unchanged',
+};
+const mcpLine = (r) => `${r.name}: ${r.error || MCP_RESULT[r.result] || r.result}${r.result === 'installed' || r.result === 'removed' ? ` (${r.file})` : ''}`;
+
+let VERSION = 'dev';
+// Dev checkout: ../package.json; packaged: the copy inside app.asar, which
+// Electron's Node mode can read.
+for (const p of [path.join(__dirname, '..', 'package.json'), path.join(__dirname, '..', '..', 'app.asar', 'package.json')]) {
+  try { VERSION = JSON.parse(fs.readFileSync(p, 'utf8')).version; break; } catch { /* try the next */ }
+}
+
+// Runs one command with its result captured instead of printed.
+async function capture(name, p) {
+  const fn = run[name];
+  if (!fn) throw new CliError(`Unknown command: ${name}`);
+  // The MCP server lives for hours; pick up what the app changed meanwhile.
+  store.reload();
+  tools.setPreference(store.get('settings')?.tools);
+  SINK = {};
+  try {
+    await fn({ pos: [], opts: {}, rest: null, ...p });
+    return SINK.data;
+  } finally {
+    SINK = null;
+  }
 }
 
 async function main() {
@@ -449,4 +551,6 @@ async function main() {
   return fn(p);
 }
 
-main().catch(fail);
+if (require.main === module) main().catch(fail);
+
+module.exports = { run, capture, CliError, KIND_EXIT };

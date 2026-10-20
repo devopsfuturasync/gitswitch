@@ -1,11 +1,15 @@
 ---
 name: gitswitch
-description: Use for any git or GitHub CLI operation (push, pull, fetch, clone, commit, gh pr/issue/repo) on this Windows machine, where the user has several GitHub accounts. Run them through the `gitswitch` command so the right account authenticates and authors the commit, instead of plain `git`/`gh` which use whatever account is cached.
+description: Use for any git or GitHub CLI operation (push, pull, fetch, clone, commit, gh pr/issue/repo) on this machine, where the user has several GitHub accounts. Run them through the `gitswitch` command so the right account authenticates and authors the commit, instead of plain `git`/`gh` which use whatever account is cached.
 ---
 
 # gitswitch: the right GitHub account for every repo
 
 This machine has more than one GitHub account logged in with the GitHub CLI. Plain `git push` or `gh pr create` can authenticate as the wrong one. `gitswitch` picks the account per repository and runs the command with that account's token and commit identity. It never prompts.
+
+## MCP tools first
+
+If your tools include `gitswitch_*` (the GitSwitch MCP server), use them: they run the same code as the commands below and return the same JSON. `gitswitch_git` and `gitswitch_gh` take `path` (absolute) and `args` (an array), for example `{"path": "C:\\code\\app", "args": ["push", "-u", "origin", "HEAD"]}`. Without them, use the `gitswitch` command as described here.
 
 ## Rules
 
@@ -39,6 +43,9 @@ This machine has more than one GitHub account logged in with the GitHub CLI. Pla
 | `gitswitch use <login> [--keep-repo] --json` | Make an account active (the app follows) and select the repo last used with it; `repo` in the reply is its path |
 | `gitswitch folder <login> [path]` | Show or set an account's folder |
 | `gitswitch detect [--add] --json` | Find repos on disk per account; `--add` adds the missing ones |
+| `gitswitch pr [path] --json` | The branch's pull request, its checks (CI) state, and the other open PRs |
+| `gitswitch pr-create --title "…" [--body "…"] [--base main] [--draft]` | Push the branch if needed and open a pull request as the right account |
+| `gitswitch mcp [status \| add \| remove] [--client id,id]` | No argument: run the MCP server on stdio. `add`/`remove`: register it in Claude Code, Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Antigravity |
 | `gitswitch help [command] --json` | Machine-readable list of commands and options |
 
 ## Switching accounts

@@ -27,6 +27,10 @@ gitswitch gh -- pr create --fill     # GitHub CLI com o token da conta certa
 gitswitch help --json                # lista de comandos para máquinas
 ```
 
+### Servidor MCP
+
+O GitSwitch também é um servidor MCP: os apps de IA ganham as ferramentas `gitswitch_*` (contas, trocar de conta, status, git e gh com a conta certa, commit, push, pull request e checks) sem precisar de terminal. Para ligar, use **Configurações → Terminal e IA → Adicionar em todos**, ou rode `gitswitch mcp add`. Ele aparece no Claude Code, Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI e Antigravity que estiverem instalados. Antes de mudar a configuração de um app, o GitSwitch guarda uma cópia em `mcp-backups`, na pasta de dados dele, e só mexe na entrada `gitswitch`. O Claude Desktop precisa estar fechado, porque ele reescreve a configuração ao fechar. `gitswitch mcp status` mostra onde está ligado e `gitswitch mcp remove` tira.
+
 A conta é escolhida assim: `--as <login>` se você passar; senão, a última conta usada com o repositório; senão, a dona do `origin` (ou a conta da organização); senão, a conta ativa do app. Para instalar, use **Configurações → Terminal e IA**, ou rode `node src/cli.js install`. Isso põe o comando no PATH e instala a skill [src/ai-skill.md](src/ai-skill.md) em `~/.claude/skills` e `~/.agents/skills`.
 
 ## Idiomas e sistemas (0.7)

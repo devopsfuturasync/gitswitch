@@ -624,5 +624,19 @@
   "{0} · {1} pronta para instalar": "{0} · {1} lista para instalar",
   "embutida": "incluida",
   "do sistema": "del sistema",
-  "O GitSwitch traz o próprio GitHub CLI; o Git vem do sistema. Escolha \"do sistema\" para usar o GitHub CLI instalado no computador.": "GitSwitch trae su propio GitHub CLI; Git viene del sistema. Elige \"del sistema\" para usar el GitHub CLI instalado en el equipo."
+  "O GitSwitch traz o próprio GitHub CLI; o Git vem do sistema. Escolha \"do sistema\" para usar o GitHub CLI instalado no computador.": "GitSwitch trae su propio GitHub CLI; Git viene del sistema. Elige \"del sistema\" para usar el GitHub CLI instalado en el equipo.",
+  "adicionado": "añadido",
+  "não adicionado": "no añadido",
+  "Removendo…": "Quitando…",
+  "Nenhum app de IA encontrado.": "No se encontró ninguna app de IA.",
+  "Servidor MCP adicionado em {0}. Reinicie o app para ver as ferramentas.": "Servidor MCP añadido en {0}. Reinicia la app para ver las herramientas.",
+  "Servidor MCP removido de {0}.": "Servidor MCP quitado de {0}.",
+  "Feche o {0} e tente de novo: ele reescreve a configuração ao fechar.": "Cierra {0} e inténtalo de nuevo: reescribe su configuración al cerrarse.",
+  "A configuração do {0} tem comentários ou não é JSON válido; não foi alterada.": "La configuración de {0} tiene comentarios o no es JSON válido; no se cambió.",
+  "Falhou em {0}: {1}": "Falló en {0}: {1}",
+  "Servidor MCP: apps de IA (Claude Code, Codex, Cursor, VS Code…) usam o GitSwitch como ferramentas próprias para trocar de conta, ver o status, fazer commit, push e pull requests com a conta certa.": "Servidor MCP: las apps de IA (Claude Code, Codex, Cursor, VS Code…) usan GitSwitch como herramientas propias para cambiar de cuenta, ver el estado, hacer commit, push y pull requests con la cuenta correcta.",
+  "Adicionar em todos": "Añadir en todas",
+  "encontrado": "encontrado",
+  "instalado": "instalado",
+  "instalada": "instalada"
 }
