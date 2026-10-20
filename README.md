@@ -16,6 +16,19 @@ Cliente Git estilo GitHub Desktop em que você troca de conta do GitHub escolhen
 
 - **No dia a dia**: escolha linhas ou trechos do diff para o commit, guarde alterações (stash), desfaça ou emende o último commit, reverta commits, junte branches e resolva conflitos. O botão direito abre mais ações em arquivos, commits e branches. A engrenagem no canto abre as **Configurações** (tema, Git global, avisos, fetch automático, atualizações).
 
+## Terminal e agentes de IA
+
+O comando `gitswitch` faz o Git e o GitHub CLI usarem a conta certa no terminal, sem perguntar nada. Ele foi pensado para agentes de IA (Claude Code, Codex, Antigravity…): toda resposta pode sair em JSON e os códigos de saída são fixos.
+
+```bash
+gitswitch whoami --json              # que conta vale aqui, e por quê
+gitswitch git -- push -u origin HEAD # qualquer comando git com a conta certa
+gitswitch gh -- pr create --fill     # GitHub CLI com o token da conta certa
+gitswitch help --json                # lista de comandos para máquinas
+```
+
+A conta é escolhida assim: `--as <login>` se você passar; senão, a última conta usada com o repositório; senão, a dona do `origin` (ou a conta da organização); senão, a conta ativa do app. Para instalar, use **Configurações → Terminal e IA**, ou rode `node src/cli.js install`. Isso põe o comando no PATH e instala a skill [src/ai-skill.md](src/ai-skill.md) em `~/.claude/skills` e `~/.agents/skills`.
+
 A comparação detalhada com o GitHub Desktop está em [docs/PARIDADE.md](docs/PARIDADE.md).
 
 ## Rodar

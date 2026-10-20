@@ -25,6 +25,7 @@ Legenda: ✅ tem · 🟡 parcial · ⬜ ainda não
 |---|---|---|
 | Várias contas no github.com, troca em um clique | ⬜ (uma por servidor) | ✅ |
 | Pasta por conta, detecção de repos no disco | ⬜ | ✅ |
+| Comando de terminal para agentes de IA (JSON, conta certa no git e no gh) | ⬜ | ✅ `gitswitch` |
 | Juntar uma pasta existente com um repo do GitHub | ⬜ | ✅ |
 | Mover repositório de pasta | 🟡 ("Locate" após mover por fora) | ✅ |
 | Clonar com a lista de repos da conta | ✅ | ✅ |

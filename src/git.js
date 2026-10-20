@@ -15,8 +15,8 @@ const IMAGE_TYPES = {
 
 // Git's English messages mapped to what the user should do about them.
 const FRIENDLY = [
-  ['auth', /Repository not found|repository '.*' not found/i, 'O GitHub não encontrou este repositório com a conta ativa. Se ele é de outra conta, troque a conta no topo.'],
-  ['auth', /Authentication failed|could not read Username|Invalid username or password|returned error: 40[13]|Permission to .* denied/i, 'O GitHub recusou o acesso da conta ativa. Confira se a conta escolhida no topo tem permissão neste repositório.'],
+  ['auth', /Repository not found|repository '.*' not found/i, 'O GitHub não encontrou este repositório com essa conta. Se ele é de outra conta, troque de conta (no app: menu Conta; no terminal: --as <login>).'],
+  ['auth', /Authentication failed|could not read Username|Invalid username or password|returned error: 40[13]|Permission to .* denied/i, 'O GitHub recusou o acesso dessa conta. Confira se ela tem permissão neste repositório (no app: menu Conta; no terminal: --as <login>).'],
   ['rules', /GH0\d\d|push declined due to repository rule|push protection|secret/i, 'O GitHub bloqueou o envio por uma regra do repositório (por exemplo, um segredo no código).'],
   ['size', /exceeds GitHub's file size limit|large files detected/i, 'Há um arquivo maior que o limite do GitHub (100 MB). Remova-o do commit ou use Git LFS.'],
   ['stale', /stale info/i, 'O GitHub mudou desde o seu último Fetch. Faça Fetch e tente de novo.'],
@@ -69,8 +69,25 @@ function progressParser(label, onProgress) {
   };
 }
 
+// Environment that makes git authenticate as `account` (and nothing else):
+// through GIT_CONFIG_PARAMETERS rather than -c so filters that git starts
+// (Git LFS) use the same credentials. Shared with the CLI's passthrough.
+function accountEnv(account) {
+  if (!account) return {};
+  const prior = process.env.GIT_CONFIG_PARAMETERS ? `${process.env.GIT_CONFIG_PARAMETERS} ` : '';
+  return {
+    GIT_CONFIG_PARAMETERS: `${prior}'credential.helper=' 'credential.https://github.com.helper=' 'credential.helper=${CRED_HELPER}'`,
+    GITSWITCH_TOKEN: account.token,
+  };
+}
+
+// Commits made by git carry the account's name and e-mail.
+function identityArgs(account) {
+  return account ? ['-c', `user.name=${account.name}`, '-c', `user.email=${account.email}`] : [];
+}
+
 function git(cwd, args, account, opts = {}) {
-  const pre = ['-c', 'core.quotepath=false', '-c', 'color.ui=false'];
+  const pre = ['-c', 'core.quotepath=false', '-c', 'color.ui=false', ...identityArgs(account)];
   const env = {
     TERM: 'dumb',
     LANGUAGE: 'C', // English messages, so FRIENDLY can recognise them
@@ -78,15 +95,8 @@ function git(cwd, args, account, opts = {}) {
     GCM_INTERACTIVE: 'never',
     GIT_EDITOR: 'true',
     ...opts.env,
+    ...accountEnv(account),
   };
-  if (account) {
-    // Through GIT_CONFIG_PARAMETERS rather than -c so filters that git starts
-    // (Git LFS) authenticate with the same account.
-    const prior = process.env.GIT_CONFIG_PARAMETERS ? `${process.env.GIT_CONFIG_PARAMETERS} ` : '';
-    env.GIT_CONFIG_PARAMETERS = `${prior}'credential.helper=' 'credential.https://github.com.helper=' 'credential.helper=${CRED_HELPER}'`;
-    env.GITSWITCH_TOKEN = account.token;
-    pre.push('-c', `user.name=${account.name}`, '-c', `user.email=${account.email}`);
-  }
   const onStderr = opts.onProgress ? progressParser(opts.progressLabel || 'Git', opts.onProgress) : undefined;
   return run('git', [...pre, ...args], { ...opts, cwd, env, onStderr }).catch((err) => {
     throw friendly(err);
@@ -553,5 +563,5 @@ module.exports = {
   createBranch, renameBranch, deleteBranch, merge, remoteUrl, fetchAll, pull, push, clone, init,
   isMerging, resolve, abortMerge, link, lastMessage, headCommit, diffHash, undoLastCommit, revert,
   stashList, stashPush, stashPop, stashDrop, stashShow, ignore, globalIdentity, setGlobalIdentity,
-  partialPatch,
+  partialPatch, accountEnv, identityArgs, friendly,
 };

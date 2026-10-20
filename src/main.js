@@ -9,6 +9,7 @@ const git = require('./git');
 const scanner = require('./scanner');
 const apps = require('./apps');
 const updater = require('./updater');
+const install = require('./install');
 
 let win;
 let store;
@@ -483,6 +484,17 @@ const handlers = {
     await git.setGlobalIdentity(identity);
   },
 
+  // --- terminal command and AI skill
+  async 'cli:status'() {
+    return { cli: install.cliStatus(), skill: install.skillStatus() };
+  },
+  async 'cli:install'() {
+    return install.installCli();
+  },
+  async 'cli:installSkill'() {
+    return install.installSkill();
+  },
+
   // --- native bits
   // items: [{ id, label, enabled?, type? }] -> the clicked id, or null.
   async 'menu:popup'(items) {
@@ -543,7 +555,10 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.on('focus', () => win.webContents.send('window:focus'));
+  win.on('focus', () => {
+    store.reload(); // the gitswitch CLI may have changed accounts or repos
+    win.webContents.send('window:focus');
+  });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 }
 

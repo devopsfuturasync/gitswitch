@@ -1727,7 +1727,9 @@ function wire() {
         runDetect({ openFor: fresh.login });
       }
     }
-    if (S.repo && $('modal').hidden) refresh({ quiet: true });
+    await loadAccounts().catch(() => {});
+    await loadRepos().catch(() => {});
+    if ($('modal').hidden) refresh({ quiet: true });
   });
 }
 
@@ -1760,6 +1762,14 @@ function selectRow(label, key, options, toValue = (v) => v) {
   sel.value = String(S.settings[key]);
   sel.addEventListener('change', () => saveSetting({ [key]: toValue(sel.value) }));
   return el('label', { class: 'set-row select' }, el('span', { class: 'grow', text: label }), sel);
+}
+
+async function renderCliState() {
+  const s = await call('cli:status').catch(() => null);
+  const node = $('cliState');
+  if (!s || !node) return;
+  const skills = s.skill.filter((x) => x.installed).length;
+  node.textContent = `Comando: ${s.cli.installed ? 'instalado' : 'não instalado'} · Skill: ${skills ? 'instalada' : 'não instalada'}`;
 }
 
 async function openSettings() {
@@ -1821,11 +1831,24 @@ async function openSettings() {
       el('div', { class: 'set-buttons' },
         el('span', { class: 'grow muted', text: updateLine() }),
         el('button', { type: 'button', text: 'Procurar atualização', disabled: S.update?.state === 'dev', onclick: checkForUpdate }))),
+    section('Terminal e IA',
+      el('p', { class: 'hint', text: 'O comando gitswitch faz o Git e o GitHub CLI usarem a conta certa no terminal. A skill ensina agentes de IA (Claude Code e outros) a usá-lo em vez de git e gh direto.' }),
+      el('div', { class: 'set-buttons' },
+        el('span', { class: 'grow muted', id: 'cliState', text: '…' }),
+        el('button', { type: 'button', text: 'Instalar comando', onclick: async () => {
+          const r = await busy('Instalando…', () => call('cli:install'));
+          if (r) { toast(r.path === 'added' ? 'Comando instalado. Abra um terminal novo e rode: gitswitch help' : 'Comando atualizado.'); renderCliState(); }
+        } }),
+        el('button', { type: 'button', text: 'Instalar skill para IA', onclick: async () => {
+          const r = await busy('Instalando…', () => call('cli:installSkill'));
+          if (r) { toast(`Skill instalada em ${r.installed.join(', ')}`); renderCliState(); }
+        } }))),
     section('Avançado',
       el('div', { class: 'set-buttons' },
         el('span', { class: 'grow muted', text: S.settings.dataDir }),
         el('button', { type: 'button', text: 'Abrir pasta de dados', onclick: () => call('shell:folder', S.settings.dataDir) }))),
   ], 'Fechar', async () => {}, { cancel: false, wide: true });
+  renderCliState();
 }
 
 // Background fetch, like GitHub Desktop, so ahead/behind stays current.

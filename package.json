@@ -1,7 +1,7 @@
 {
   "name": "gitswitch",
   "productName": "GitSwitch",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Cliente Git estilo GitHub Desktop com troca de conta do GitHub em um clique.",
   "author": "Danilo",
   "private": true,
@@ -47,9 +47,16 @@
         "repo": "gitswitch",
         "releaseType": "release"
       }
+    ],
+    "asarUnpack": [
+      "src/*.js",
+      "src/ai-skill.md"
     ]
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
+  },
+  "bin": {
+    "gitswitch": "src/cli.js"
   }
 }
