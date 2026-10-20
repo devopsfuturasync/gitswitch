@@ -12,6 +12,7 @@ const git = require('./git');
 const scanner = require('./scanner');
 const apps = require('./apps');
 const install = require('./install');
+const tools = require('./tools');
 
 const EXIT = { ok: 0, failed: 1, usage: 2, auth: 3, notfound: 4 };
 const KIND_EXIT = { usage: EXIT.usage, auth: EXIT.auth, notfound: EXIT.notfound, notrepo: EXIT.notfound, 'missing-ref': EXIT.notfound };
@@ -97,6 +98,7 @@ const endProgress = () => { if (!JSON_MODE && process.stderr.isTTY) process.stde
 
 // ---------- state ----------
 const store = new Store();
+tools.setPreference(store.get('settings')?.tools);
 const overrides = () => store.get('identities');
 const samePath = (a, b) => Boolean(a && b) && path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
 
@@ -397,7 +399,7 @@ async function passthrough(tool, rest, opts, build) {
   const who = await resolve(cwd, opts.as);
   const creds = await accounts.credentials(who.account.login, overrides());
   const { args, env } = build(creds);
-  const child = spawn(tool, args, {
+  const child = spawn(tools.bin(tool), args, {
     cwd,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', ...env },
     stdio: ['inherit', 'pipe', 'pipe'],

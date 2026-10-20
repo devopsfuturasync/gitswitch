@@ -1,4 +1,5 @@
 const { run } = require('./run');
+const tools = require('./tools');
 const github = require('./github');
 
 const HOST = 'github.com';
@@ -10,7 +11,7 @@ const cache = new Map();
 async function listLogins() {
   let data = {};
   try {
-    const { stdout } = await run('gh', ['auth', 'status', '--hostname', HOST, '--json', 'hosts'], { allowCodes: [0, 1] });
+    const { stdout } = await run(tools.bin('gh'), ['auth', 'status', '--hostname', HOST, '--json', 'hosts'], { allowCodes: [0, 1] });
     data = JSON.parse(stdout || '{}');
   } catch {
     return [];
@@ -23,7 +24,7 @@ async function listLogins() {
 async function token(login) {
   const hit = cache.get(login);
   if (hit?.token) return hit.token;
-  const { stdout } = await run('gh', ['auth', 'token', '--hostname', HOST, '--user', login]);
+  const { stdout } = await run(tools.bin('gh'), ['auth', 'token', '--hostname', HOST, '--user', login]);
   const value = stdout.trim();
   cache.set(login, { ...hit, token: value });
   return value;
@@ -74,10 +75,10 @@ function clearCache() {
 // Optional: make the terminal (gh + global git) use the same account.
 async function syncGlobal(login, overrides = {}) {
   const c = await credentials(login, overrides);
-  await run('gh', ['auth', 'switch', '--hostname', HOST, '--user', login]);
-  await run('git', ['config', '--global', 'user.name', c.name]);
-  await run('git', ['config', '--global', 'user.email', c.email]);
-  await run('git', ['config', '--global', `credential.https://${HOST}.username`, login]);
+  await run(tools.bin('gh'), ['auth', 'switch', '--hostname', HOST, '--user', login]);
+  await run(tools.bin('git'), ['config', '--global', 'user.name', c.name]);
+  await run(tools.bin('git'), ['config', '--global', 'user.email', c.email]);
+  await run(tools.bin('git'), ['config', '--global', `credential.https://${HOST}.username`, login]);
 }
 
 module.exports = { list, credentials, clearCache, syncGlobal, HOST };

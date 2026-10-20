@@ -655,3 +655,41 @@ select {
 .ref.local { border-color: var(--accent); color: var(--accent); }
 .pop-foot .hint { width: 100%; margin: 0; }
 .muted.grow { font-size: 12px; }
+
+/* ---------- 0.6: PRs, AI, co-authors ---------- */
+.tb-icon .ico { width: 18px; height: 18px; }
+#prBtn { min-width: 170px; }
+.check-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.check-dot.success { background: var(--added); }
+.check-dot.failure { background: var(--danger); }
+.check-dot.pending { background: var(--modified); }
+.check-dot.none { background: var(--muted); }
+.pr-head { padding: 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.pr-head strong { font-size: 14px; }
+.check-item { display: flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 12px; }
+.check-item a, .check-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.summary-row { display: flex; gap: 6px; }
+.summary-row input { flex: 1; }
+.ai-btn { padding: 0 9px; color: var(--accent); }
+.ai-btn.working .ico { animation: spin 1.2s linear infinite; }
+.commit-extras { display: flex; justify-content: flex-start; }
+.link-btn { border: 0; background: transparent; padding: 0; color: var(--accent); font-size: 12px; }
+.link-btn:hover:not(:disabled) { background: transparent; text-decoration: underline; }
+.shortcut-list { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font-size: 12px; margin: 0; }
+.shortcut-list kbd { font: 11px/1.6 "Cascadia Code", Consolas, monospace; padding: 0 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--surface-2); white-space: nowrap; }
+#prMenu .pop-list { flex: 0 1 auto; max-height: 240px; }
+/* Toolbar fits narrower windows: buttons shrink, then right-side labels hide. */
+.tb { min-width: 150px; flex-shrink: 1; }
+#prBtn { min-width: 140px; }
+@media (max-width: 1500px) {
+  .act > span:not(#openLabel) { display: none; }
+  #openLabel { max-width: 110px; }
+}
+@media (max-width: 1200px) {
+  #openLabel { display: none; }
+  .tb { min-width: 120px; }
+}
+/* Long dialogs (Settings) scroll inside the body instead of growing past the window. */
+.modal { overflow: hidden; }
+.modal > form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.modal > form > .modal-body { flex: 1; }

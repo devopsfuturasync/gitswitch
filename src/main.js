@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeTheme, Notification } = require('electron');
 const { Store } = require('./store');
 const accounts = require('./accounts');
 const github = require('./github');
@@ -10,6 +10,10 @@ const scanner = require('./scanner');
 const apps = require('./apps');
 const updater = require('./updater');
 const install = require('./install');
+const ai = require('./ai');
+const scannerParse = require('./scanner').parseGithub;
+const tools = require('./tools');
+const { run } = require('./run');
 
 let win;
 let store;
@@ -26,8 +30,24 @@ const DEFAULT_SETTINGS = {
   confirmRemoveRepo: false,
   autoFetchMinutes: 5,      // 0 = off
   autoUpdate: true,
+  tools: { git: 'bundled', gh: 'bundled' }, // or 'system' for the PATH copies
+  ai: { provider: 'claude', model: '', language: 'en' },
+  zoom: 0,
+  notifyChecks: true,
 };
 const settings = () => ({ ...DEFAULT_SETTINGS, ...store.get('settings') });
+
+async function toolVersions() {
+  const v = async (name) => {
+    try {
+      const { stdout } = await run(tools.bin(name), ['--version']);
+      return stdout.split('\n')[0].trim();
+    } catch {
+      return 'não encontrado';
+    }
+  };
+  return { git: await v('git'), gh: await v('gh') };
+}
 
 const samePath = (a, b) => Boolean(a && b) && path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
 
@@ -74,7 +94,7 @@ function removeRepo(repoPath) {
 
 // Opens a separate console so the user can finish the browser login there.
 function openLoginConsole() {
-  spawn('cmd.exe', ['/k', `gh auth login --hostname ${accounts.HOST} --web --git-protocol https`], {
+  spawn('cmd.exe', ['/k', `"${tools.bin('gh')}" auth login --hostname ${accounts.HOST} --web --git-protocol https`], {
     detached: true,
     stdio: 'ignore',
   }).unref();
@@ -257,10 +277,10 @@ const handlers = {
 
   // --- working with a repository
   async 'repo:info'(repo) {
-    const [status, remoteUrl, merging, stashes, head] = await Promise.all([
-      git.status(repo), git.remoteUrl(repo), git.isMerging(repo), git.stashList(repo), git.headCommit(repo),
+    const [status, remoteUrl, operation, stashes, head] = await Promise.all([
+      git.status(repo), git.remoteUrl(repo), git.operation(repo), git.stashList(repo), git.headCommit(repo),
     ]);
-    return { ...status, remoteUrl, merging, stashes, head };
+    return { ...status, remoteUrl, operation, merging: Boolean(operation), stashes, head };
   },
   async 'repo:diff'(repo, file, initial) {
     return git.diff(repo, file, { initial, hideWhitespace: settings().hideWhitespace });
@@ -287,6 +307,105 @@ const handlers = {
   },
   async 'repo:abortMerge'(repo) {
     await git.abortMerge(repo);
+  },
+  async 'repo:abortOperation'(repo, op) {
+    await git.abortOperation(repo, op);
+  },
+  async 'repo:createTag'(repo, name, sha, message) {
+    const c = await activeCredentials();
+    await git.createTag(repo, c, name, sha, message);
+  },
+  async 'repo:deleteTag'(repo, name) {
+    const choice = await ask('question', `Apagar a tag ${name}?`, 'Se ela já foi enviada, você pode apagá-la no GitHub também.',
+      ['Apagar só aqui', 'Apagar aqui e no GitHub', 'Cancelar']);
+    if (choice === 2) return false;
+    const c = await activeCredentials();
+    await git.deleteTag(repo, c, name, choice === 1);
+    return true;
+  },
+  async 'repo:cherryPick'(repo, sha, branch, parents) {
+    const c = await activeCredentials();
+    return git.cherryPick(repo, c, sha, branch, parents);
+  },
+  async 'repo:messagesSince'(repo, sha) {
+    return git.messagesSince(repo, sha);
+  },
+  async 'repo:squash'(repo, sha, message) {
+    const c = await activeCredentials();
+    await git.squash(repo, c, sha, message);
+  },
+
+  // --- AI
+  async 'ai:providers'() {
+    return ai.providers();
+  },
+  async 'ai:commitMessage'(repo, files, initial) {
+    let diff = '';
+    for (const f of files) {
+      const d = await git.diff(repo, f, { initial }).catch(() => null);
+      if (d?.kind === 'text') diff += d.text;
+      else diff += `Binary or large file changed: ${f.path}\n`;
+      if (diff.length > 80 * 1024) break;
+    }
+    return ai.commitMessage(diff, settings().ai);
+  },
+
+  // --- pull requests
+  async 'pr:current'(repo) {
+    const url = await git.remoteUrl(repo);
+    const gh = scannerParse(url);
+    if (!gh) return null;
+    const c = await activeCredentials();
+    const st = await git.status(repo);
+    const info = await github.repoInfo(c.token, gh.owner, gh.repo).catch(() => null);
+    const pr = st.branch ? await github.pullForBranch(c.token, gh.owner, gh.repo, st.branch).catch(() => null) : null;
+    const head = await git.headCommit(repo);
+    const sha = pr?.headSha || (st.upstream && head?.sha);
+    const checks = sha ? await github.checks(c.token, gh.owner, gh.repo, sha).catch(() => null) : null;
+    return { owner: gh.owner, repo: gh.repo, branch: st.branch, upstream: st.upstream, defaultBranch: info?.defaultBranch || 'main', pr, checks };
+  },
+  async 'pr:list'(repo) {
+    const gh = scannerParse(await git.remoteUrl(repo));
+    if (!gh) return [];
+    const c = await activeCredentials();
+    return github.openPulls(c.token, gh.owner, gh.repo);
+  },
+  async 'pr:create'(repo, data) {
+    const gh = scannerParse(await git.remoteUrl(repo));
+    if (!gh) throw new Error('Esse repositório não está no GitHub.');
+    const c = await activeCredentials();
+    const st = await git.status(repo);
+    if (!st.upstream) await git.push(repo, c, { upstream: false }, progress);
+    else if (st.ahead) await git.push(repo, c, { upstream: true }, progress);
+    rememberAccount(repo, c.login);
+    return github.createPull(c.token, gh.owner, gh.repo, { ...data, head: st.branch });
+  },
+  // Same-repo PRs check out their real branch; forks get a local pr/N branch.
+  async 'pr:checkout'(repo, pull) {
+    const c = await activeCredentials();
+    const gh = scannerParse(await git.remoteUrl(repo));
+    const sameRepo = pull.headRepo && pull.headRepo.toLowerCase() === `${gh.owner}/${gh.repo}`.toLowerCase();
+    if (sameRepo) {
+      await git.fetchAll(repo, c, progress);
+      await git.checkout(repo, `origin/${pull.head}`, true);
+    } else {
+      await git.fetchRef(repo, c, `pull/${pull.number}/head:pr/${pull.number}`);
+      await git.checkout(repo, `pr/${pull.number}`, false);
+    }
+  },
+
+  // --- window
+  async 'window:zoom'(step) {
+    const level = step === 0 ? 0 : Math.max(-3, Math.min(5, win.webContents.getZoomLevel() + step));
+    win.webContents.setZoomLevel(level);
+    store.set('settings', { ...settings(), zoom: level });
+    return level;
+  },
+  async 'notify'(title, body) {
+    if (!Notification.isSupported() || !settings().notifyChecks) return;
+    const n = new Notification({ title, body });
+    n.on('click', () => { win.show(); win.focus(); });
+    n.show();
   },
   async 'repo:log'(repo) {
     return git.log(repo);
@@ -473,7 +592,10 @@ const handlers = {
 
   // --- settings
   async 'settings:get'() {
-    return { ...settings(), globalIdentity: await git.globalIdentity(), dataDir: app.getPath('userData'), version: app.getVersion() };
+    return {
+      ...settings(), globalIdentity: await git.globalIdentity(), dataDir: app.getPath('userData'), version: app.getVersion(),
+      toolInfo: { ...tools.describe(), versions: await toolVersions() },
+    };
   },
   async 'settings:set'(patch) {
     store.set('settings', { ...settings(), ...patch });
@@ -535,6 +657,7 @@ for (const [name, fn] of Object.entries(handlers)) {
 function applySettings() {
   const s = settings();
   nativeTheme.themeSource = s.theme;
+  tools.setPreference(s.tools);
   updater.setAutoDownload(s.autoUpdate);
 }
 
@@ -555,6 +678,7 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.webContents.on('did-finish-load', () => win.webContents.setZoomLevel(settings().zoom || 0));
   win.on('focus', () => {
     store.reload(); // the gitswitch CLI may have changed accounts or repos
     win.webContents.send('window:focus');

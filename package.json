@@ -1,7 +1,7 @@
 {
   "name": "gitswitch",
   "productName": "GitSwitch",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Cliente Git estilo GitHub Desktop com troca de conta do GitHub em um clique.",
   "author": "Danilo",
   "private": true,
@@ -9,8 +9,9 @@
   "scripts": {
     "start": "electron .",
     "icon": "node build/make-icon.js",
-    "dist": "electron-builder --win nsis",
-    "release": "node build/release.js"
+    "dist": "node build/fetch-vendor.js && electron-builder --win nsis",
+    "release": "node build/release.js",
+    "vendor": "node build/fetch-vendor.js"
   },
   "devDependencies": {
     "electron": "44.9.0",
@@ -51,6 +52,16 @@
     "asarUnpack": [
       "src/*.js",
       "src/ai-skill.md"
+    ],
+    "extraResources": [
+      {
+        "from": "build/vendor/git",
+        "to": "git"
+      },
+      {
+        "from": "build/vendor/gh",
+        "to": "gh"
+      }
     ]
   },
   "dependencies": {

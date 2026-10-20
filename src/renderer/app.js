@@ -22,6 +22,9 @@ const S = {
   sel: new Map(),      // path -> { hash, all, picked } for files with picked lines
   settings: {},
   lastFetch: 0,
+  pr: null,             // { pr, checks, defaultBranch, … } for the current branch
+  prAt: 0,
+  lastChecks: new Map(), // repo|branch -> checks state, for notifications
   update: null,
   manualCheck: false,
 };
@@ -125,6 +128,7 @@ async function loadAccounts() {
   S.active = res.active;
   S.syncGlobal = res.syncGlobal;
   renderAccount();
+  fillCoauthorSuggestions();
 }
 
 function renderAccount() {
@@ -549,6 +553,7 @@ async function refresh({ quiet = false } = {}) {
     $('syncBtn').disabled = true;
     $('branchLabel').textContent = '—';
     S.info = null;
+    $('prBtn').hidden = true;
     renderAccountHint();
     renderMergeHint();
     return;
@@ -563,24 +568,31 @@ async function refresh({ quiet = false } = {}) {
   renderFiles();
   renderAccountHint();
   renderMergeHint();
+  loadPr().catch(() => {});
   if (S.tab === 'history') await loadHistory();
 }
 
 // While a merge is open everything has to go into the commit.
+const OPERATION_LABEL = { merge: 'Juntando branches', 'cherry-pick': 'Aplicando commit (cherry-pick)', revert: 'Revertendo commit', rebase: 'Rebase em andamento' };
+
 function renderMergeHint() {
   const bar = $('mergeHint');
   const i = S.info;
-  bar.hidden = !i?.merging;
-  if (!i?.merging) return;
+  const op = i?.operation;
+  bar.hidden = !op;
+  if (!op) return;
   const conflicts = i.files.filter((f) => f.kind === 'conflict').length;
+  const text = op === 'rebase'
+    ? 'Rebase em andamento (começou fora do GitSwitch). Continue pelo terminal ou cancele aqui.'
+    : conflicts
+      ? `${OPERATION_LABEL[op]}: ${conflicts} arquivo(s) em conflito. Abra cada um e escolha uma versão, depois faça commit.`
+      : `${OPERATION_LABEL[op]}: sem conflitos pendentes. Faça commit para concluir.`;
   bar.replaceChildren(
-    el('span', { class: 'grow', text: conflicts
-      ? `Juntando históricos: ${conflicts} arquivo(s) em conflito. Abra cada um e escolha uma versão, depois faça commit.`
-      : 'Juntando históricos: sem conflitos pendentes. Faça commit para concluir.' }),
+    el('span', { class: 'grow', text }),
     el('button', {
-      text: 'Cancelar junção',
+      text: 'Cancelar',
       onclick: async () => {
-        await busy('Cancelando…', () => call('repo:abortMerge', S.repo));
+        await busy('Cancelando…', () => call('repo:abortOperation', S.repo, op));
         showEmptyDiff();
         await refresh();
       },
@@ -760,7 +772,7 @@ function updateCommitButton() {
     ? `Emendar o último commit${count ? ` (+${count})` : ''}`
     : `Commit em ${S.info?.branch || 'HEAD'}${count ? ` (${count})` : ''}`;
   const conflicts = S.info?.files.some((f) => f.kind === 'conflict');
-  btn.disabled = (!count && !amend) || !commitSummary() || !S.active || conflicts;
+  btn.disabled = (!count && !amend) || !commitSummary() || !S.active || conflicts || S.info?.operation === 'rebase';
   $('summary').placeholder = S.info?.merging ? 'Juntar com o GitHub' : 'Resumo (obrigatório)';
 }
 
@@ -1068,6 +1080,11 @@ async function commitMenu(c, idx) {
     { id: 'amend', label: 'Emendar este commit', enabled: isHead && !S.info.merging },
     { type: 'separator' },
     { id: 'web', label: 'Ver no GitHub', enabled: Boolean(web) && !unpushed },
+    { type: 'separator' },
+    { id: 'tag', label: 'Criar tag neste commit…' },
+    ...tagsOf(c).map((t) => ({ id: `deltag:${t}`, label: `Apagar a tag ${t}…` })),
+    { id: 'cherry', label: 'Aplicar este commit em outra branch (cherry-pick)…' },
+    { id: 'squash', label: idx > 0 ? `Juntar os ${idx + 1} commits mais novos (até este) em um só…` : 'Juntar commits (escolha um mais antigo)', enabled: idx > 0 && unpushedRange(idx) && !S.info.merging },
   ]);
   if (picked === 'copy') { call('clipboard:write', c.sha); toast('SHA copiado.'); }
   else if (picked === 'copyMsg') call('clipboard:write', c.subject);
@@ -1083,6 +1100,12 @@ async function commitMenu(c, idx) {
   } else if (picked === 'undo') undoCommit();
   else if (picked === 'amend') { setTab('changes'); startAmend(); }
   else if (picked === 'web') call('shell:url', `${web}/commit/${c.sha}`);
+  else if (picked === 'tag') openTagModal(c);
+  else if (picked?.startsWith('deltag:')) {
+    const done = await busy('Apagando a tag…', () => call('repo:deleteTag', S.repo, picked.slice(7)));
+    if (done) { toast('Tag apagada.'); await refresh(); }
+  } else if (picked === 'cherry') openCherryPickModal(c);
+  else if (picked === 'squash') openSquashModal(c, idx);
 }
 
 function githubWebUrl() {
@@ -1366,7 +1389,8 @@ async function commit(e) {
   const files = commitFiles();
   const amend = $('amend').checked;
   const summary = commitSummary();
-  const description = $('description').value.trim();
+  const trailers = coauthorTrailers();
+  const description = [$('description').value.trim(), trailers].filter(Boolean).join('\n\n');
   if ((!files.length && !amend) || !summary) return;
   const ok = await busy(amend ? 'Emendando o commit…' : 'Fazendo commit…', async () => {
     await call('repo:commit', S.repo, files, description ? `${summary}\n\n${description}` : summary,
@@ -1376,6 +1400,7 @@ async function commit(e) {
   if (!ok) return;
   $('summary').value = '';
   $('description').value = '';
+  $('coauthors').value = '';
   $('amend').checked = false;
   $('amendHint').hidden = true;
   S.sel.clear();
@@ -1699,9 +1724,14 @@ function wire() {
     if (!e.target.closest('.popover')) closePopovers();
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    closePopovers();
-    closeModal();
+    if (e.key === 'Escape') { closePopovers(); closeModal(); return; }
+    handleShortcut(e);
+  });
+  $('prBtn').addEventListener('click', (e) => { e.stopPropagation(); openPrMenu(); });
+  $('aiBtn').addEventListener('click', generateMessage);
+  $('coauthorToggle').addEventListener('click', () => {
+    $('coauthorRow').hidden = !$('coauthorRow').hidden;
+    if (!$('coauthorRow').hidden) $('coauthors').focus();
   });
   $('modal').addEventListener('mousedown', (e) => { if (e.target === $('modal')) closeModal(); });
 
@@ -1731,6 +1761,334 @@ function wire() {
     await loadRepos().catch(() => {});
     if ($('modal').hidden) refresh({ quiet: true });
   });
+}
+
+// ---------- tags, cherry-pick, squash ----------
+function tagsOf(c) {
+  return (c.refs || '').split(', ').filter((r) => r.startsWith('tag: ')).map((r) => r.slice(5));
+}
+
+// True when every commit from the newest down to idx is still only local.
+function unpushedRange(idx) {
+  const i = S.info;
+  if (!i?.remoteUrl || !i.upstream) return true;
+  return idx < i.ahead;
+}
+
+function openTagModal(c) {
+  const name = el('input', { placeholder: 'v1.0.0', autocomplete: 'off' });
+  const message = el('input', { placeholder: 'Opcional' });
+  openModal(`Criar tag em ${c.short}`, [
+    el('label', {}, 'Nome', name),
+    el('label', {}, 'Mensagem', message),
+    el('p', { class: 'hint', text: 'A tag vai para o GitHub no próximo push.' }),
+  ], 'Criar tag', async () => {
+    const n = name.value.trim().replace(/\s+/g, '-');
+    if (!n) throw new Error('Dê um nome para a tag.');
+    await call('repo:createTag', S.repo, n, c.sha, message.value.trim());
+    toast(`Tag ${n} criada.`);
+    await refresh();
+  });
+  name.focus();
+}
+
+async function openCherryPickModal(c) {
+  const data = await call('repo:branches', S.repo);
+  const options = data.local.filter((b) => b !== S.info.branch);
+  if (!options.length) { toast('Não há outra branch local para receber o commit.', true); return; }
+  let picked = null;
+  const list = el('div', { class: 'repo-pick' });
+  const draw = () => list.replaceChildren(...options.map((b) => el('button', {
+    type: 'button', class: `item${picked === b ? ' selected' : ''}`, onclick: () => { picked = b; draw(); },
+  }, el('span', { class: 'grow', text: b }))));
+  draw();
+  openModal(`Aplicar "${c.subject}" em…`, [
+    el('p', { class: 'hint', text: 'O GitSwitch troca para a branch escolhida e cria nela uma cópia deste commit.' }),
+    list,
+  ], 'Aplicar', async () => {
+    if (!picked) throw new Error('Escolha uma branch.');
+    closeModal();
+    const result = await busy(`Aplicando em ${picked}…`, () => call('repo:cherryPick', S.repo, c.sha, picked, c.parents.length));
+    if (result === 'applied') toast(`Commit aplicado em ${picked}.`);
+    if (result === 'conflicts') toast('Há conflitos. Resolva os arquivos marcados com ! e faça commit.', true);
+    S.sel.clear();
+    S.unchecked.clear();
+    await refresh();
+  });
+}
+
+async function openSquashModal(c, idx) {
+  const messages = await call('repo:messagesSince', S.repo, c.sha);
+  const summary = el('input', { value: messages[0]?.split('\n')[0] || '' });
+  const description = el('textarea', { rows: 6 });
+  description.value = messages.join('\n\n');
+  openModal(`Juntar ${idx + 1} commits em um só`, [
+    el('p', { class: 'hint', text: 'Os commits continuam só neste computador; nenhum arquivo muda. Ajuste a mensagem do commit único.' }),
+    el('label', {}, 'Resumo', summary),
+    el('label', {}, 'Descrição', description),
+  ], 'Juntar commits', async () => {
+    if (!summary.value.trim()) throw new Error('Escreva um resumo.');
+    const message = [summary.value.trim(), description.value.trim()].filter(Boolean).join('\n\n');
+    await call('repo:squash', S.repo, c.sha, message);
+    toast(`${idx + 1} commits viraram um.`);
+    await refresh();
+  });
+}
+
+// ---------- co-authors ----------
+function coauthorTrailers() {
+  const raw = $('coauthors').value.trim();
+  if (!raw) return '';
+  return raw.split(',').map((s) => s.trim()).filter((s) => /<[^>]+@[^>]+>/.test(s))
+    .map((s) => `Co-authored-by: ${s}`).join('\n');
+}
+
+function fillCoauthorSuggestions() {
+  $('coauthorList').replaceChildren(...S.accounts.filter((a) => a.login !== S.active)
+    .map((a) => el('option', { value: `${a.identity.name} <${a.identity.email}>` })));
+}
+
+// ---------- AI commit message ----------
+async function generateMessage() {
+  if (!S.info) return;
+  const files = commitFiles();
+  if (!files.length) { toast('Selecione alterações para a IA descrever.', true); return; }
+  if ($('summary').value.trim() || $('description').value.trim()) {
+    const pick = await choose('Substituir a mensagem?', 'A IA vai escrever por cima do que você já digitou.', [['go', 'Substituir', true], ['cancel', 'Cancelar']]);
+    if (pick !== 'go') return;
+  }
+  const btn = $('aiBtn');
+  btn.classList.add('working');
+  btn.disabled = true;
+  try {
+    const r = await call('ai:commitMessage', S.repo, files, S.info.initial);
+    $('summary').value = r.summary;
+    $('description').value = r.description;
+    updateCommitButton();
+    toast(`Mensagem escrita por ${r.provider === 'claude' ? 'Claude Code' : `Ollama (${r.model})`}. Revise antes do commit.`);
+  } catch (err) {
+    toast(err.message, true, err.detail);
+  } finally {
+    btn.classList.remove('working');
+    btn.disabled = false;
+  }
+}
+
+function aiProviderRow() {
+  const sel = el('select', {},
+    el('option', { value: 'claude', text: 'Claude Code (comando claude)' }),
+    el('option', { value: 'ollama', text: 'Ollama (modelo local)' }),
+    el('option', { value: 'off', text: 'Desligado' }));
+  sel.value = S.settings.ai?.provider || 'claude';
+  const state = el('small', { text: 'verificando…' });
+  call('ai:providers').then((p) => {
+    const bits = [
+      `Claude Code: ${p.claude.available ? 'encontrado' : 'não encontrado'}`,
+      `Ollama: ${p.ollama.available ? `${p.ollama.models.length} modelo(s)` : 'não está rodando'}`,
+    ];
+    state.textContent = bits.join(' · ');
+  }).catch(() => { state.textContent = ''; });
+  sel.addEventListener('change', () => saveSetting({ ai: { ...S.settings.ai, provider: sel.value } }));
+  return el('label', { class: 'set-row select' }, el('span', { class: 'grow' }, el('span', { text: 'Provedor' }), state), sel);
+}
+
+function aiModelInput() {
+  const input = el('input', { value: S.settings.ai?.model || '', placeholder: 'ex.: haiku, sonnet, llama3.2' });
+  input.addEventListener('change', () => saveSetting({ ai: { ...S.settings.ai, model: input.value.trim() } }));
+  return input;
+}
+
+function selectAiLanguage() {
+  const sel = el('select', {}, el('option', { value: 'en', text: 'Inglês' }), el('option', { value: 'pt', text: 'Português' }));
+  sel.value = S.settings.ai?.language || 'en';
+  sel.addEventListener('change', () => saveSetting({ ai: { ...S.settings.ai, language: sel.value } }));
+  return el('label', { class: 'set-row select' }, el('span', { class: 'grow', text: 'Idioma das mensagens' }), sel);
+}
+
+function toolRow(name, label) {
+  const info = S.settings.toolInfo?.[name];
+  const sel = el('select', {},
+    el('option', { value: 'bundled', text: 'Embutido no GitSwitch', disabled: !info?.bundled }),
+    el('option', { value: 'system', text: 'Do sistema (PATH)' }));
+  sel.value = S.settings.tools?.[name] || 'bundled';
+  sel.addEventListener('change', async () => {
+    await saveSetting({ tools: { ...S.settings.tools, [name]: sel.value } });
+    toast(`${label}: agora usando a versão ${sel.value === 'bundled' ? 'embutida' : 'do sistema'}.`);
+  });
+  return el('label', { class: 'set-row select' },
+    el('span', { class: 'grow' }, el('span', { text: label }), el('small', { text: S.settings.toolInfo?.versions?.[name] || '' })), sel);
+}
+
+// ---------- pull requests ----------
+const CHECK_TEXT = { success: 'checks ok', failure: 'checks falharam', pending: 'checks rodando', none: 'sem checks' };
+
+async function loadPr({ force = false } = {}) {
+  const gh = githubWebUrl();
+  $('prBtn').hidden = !gh || !S.info?.branch;
+  if (!gh || !S.info?.branch) { S.pr = null; return; }
+  if (!force && S.pr?.repo === S.repo && S.pr.branch === S.info.branch && Date.now() - S.prAt < 60 * 1000) {
+    renderPrButton();
+    return;
+  }
+  const data = await call('pr:current', S.repo);
+  S.pr = data ? { ...data, repo: S.repo } : null;
+  S.prAt = Date.now();
+  renderPrButton();
+  notifyChecks();
+}
+
+function renderPrButton() {
+  const d = S.pr;
+  if (!d) return;
+  const state = d.checks?.state || 'none';
+  if (d.pr) {
+    $('prLabel').textContent = `#${d.pr.number} ${d.pr.draft ? '(rascunho)' : ''}`.trim();
+    $('prHint').replaceChildren(el('span', { class: `check-dot ${state}` }), CHECK_TEXT[state]);
+  } else {
+    $('prLabel').textContent = d.branch === d.defaultBranch ? 'Ver PRs' : 'Criar PR';
+    $('prHint').replaceChildren(d.checks && d.checks.state !== 'none' ? el('span', { class: `check-dot ${state}` }) : '', d.checks && d.checks.state !== 'none' ? CHECK_TEXT[state] : 'Pull request');
+  }
+}
+
+// Notifies once per state change of the current branch's checks.
+function notifyChecks() {
+  const d = S.pr;
+  if (!d?.checks || d.checks.state === 'none') return;
+  const key = `${d.repo}|${d.branch}|${d.pr?.headSha || ''}`;
+  const before = S.lastChecks.get(key);
+  S.lastChecks.set(key, d.checks.state);
+  if (!before || before === d.checks.state || before !== 'pending') return;
+  const where = d.pr ? `PR #${d.pr.number}` : d.branch;
+  if (d.checks.state === 'failure') {
+    const failed = d.checks.items.filter((i) => i.state === 'failure').map((i) => i.name).slice(0, 3).join(', ');
+    call('notify', `Checks falharam em ${where}`, failed || 'Abra o GitSwitch para ver.');
+  } else if (d.checks.state === 'success') {
+    call('notify', `Checks passaram em ${where}`, 'Tudo verde.');
+  }
+}
+
+async function openPrMenu() {
+  const menu = $('prMenu');
+  if (!menu.hidden) { closePopovers(); return; }
+  await busy('Consultando o GitHub…', () => loadPr({ force: true }));
+  const d = S.pr;
+  if (!d) return;
+  const web = githubWebUrl();
+  const parts = [];
+  if (d.pr) {
+    parts.push(el('div', { class: 'pr-head' },
+      el('strong', { text: `#${d.pr.number} ${d.pr.title}` }),
+      el('span', { class: 'muted', text: `${d.pr.head} → ${d.pr.base} · por ${d.pr.author}${d.pr.draft ? ' · rascunho' : ''}` })));
+  } else {
+    parts.push(el('div', { class: 'pr-head' },
+      el('strong', { text: d.branch === d.defaultBranch ? `${d.branch} é a branch principal` : `Nenhum PR aberto para ${d.branch}` }),
+      el('span', { class: 'muted', text: d.branch === d.defaultBranch ? 'Crie uma branch para abrir um pull request.' : `Abra um PR para juntar em ${d.defaultBranch}.` })));
+  }
+  if (d.checks?.items.length) {
+    parts.push(el('div', { class: 'pop-title', text: `Checks: ${CHECK_TEXT[d.checks.state]}` }));
+    parts.push(el('div', { class: 'pop-list' }, d.checks.items.map((c) => el('div', { class: 'check-item' },
+      el('span', { class: `check-dot ${c.state}` }),
+      c.url ? el('a', { href: '#', text: c.name, onclick: (e) => { e.preventDefault(); call('shell:url', c.url); } }) : el('span', { class: 'grow', text: c.name })))));
+  }
+  const open = await call('pr:list', S.repo).catch(() => []);
+  const others = open.filter((p) => p.number !== d.pr?.number);
+  if (others.length) {
+    parts.push(el('div', { class: 'pop-title', text: 'Outros PRs abertos (clique para fazer checkout)' }));
+    parts.push(el('div', { class: 'pop-list' }, others.slice(0, 20).map((p) => el('button', {
+      class: 'item', onclick: () => checkoutPr(p),
+    }, el('span', { class: 'grow' }, el('span', { text: `#${p.number} ${p.title}` }), el('span', { class: 'muted', text: `${p.head} · ${p.author}${p.draft ? ' · rascunho' : ''}` }))))));
+  }
+  parts.push(el('div', { class: 'pop-foot' },
+    d.pr
+      ? el('button', { class: 'primary', text: 'Abrir no GitHub', onclick: () => { closePopovers(); call('shell:url', d.pr.url); } })
+      : el('button', { class: 'primary', text: 'Criar pull request…', disabled: d.branch === d.defaultBranch, onclick: openCreatePrModal }),
+    el('button', { text: 'Ver todos no GitHub', onclick: () => { closePopovers(); call('shell:url', `${web}/pulls`); } })));
+  menu.replaceChildren(...parts);
+  openPopover(menu, $('prBtn'));
+}
+
+async function checkoutPr(p) {
+  closePopovers();
+  const ok = await busy(`Baixando o PR #${p.number}…`, async () => { await call('pr:checkout', S.repo, p); return true; });
+  if (ok) toast(`Você está no PR #${p.number} (${p.head}).`);
+  S.sel.clear();
+  S.unchecked.clear();
+  await refresh();
+}
+
+async function openCreatePrModal() {
+  closePopovers();
+  const d = S.pr;
+  const last = await call('repo:lastMessage', S.repo).catch(() => '');
+  const [first, ...rest] = last.split('\n');
+  const title = el('input', { value: first || d.branch });
+  const body = el('textarea', { rows: 6 });
+  body.value = rest.join('\n').trim();
+  const base = el('input', { value: d.defaultBranch });
+  const draft = el('input', { type: 'checkbox' });
+  openModal(`Pull request de ${d.branch}`, [
+    el('label', {}, 'Título', title),
+    el('label', {}, 'Descrição', body),
+    el('label', {}, 'Juntar em (base)', base),
+    el('label', { class: 'inline-check' }, draft, 'Abrir como rascunho'),
+    el('p', { class: 'hint', text: `Criado como @${S.active}. Se a branch ainda não está no GitHub, ela é enviada antes.` }),
+  ], 'Criar pull request', async () => {
+    if (!title.value.trim()) throw new Error('Dê um título ao pull request.');
+    const pr = await busy('Criando o pull request…', () => call('pr:create', S.repo, {
+      title: title.value.trim(), body: body.value.trim(), base: base.value.trim() || d.defaultBranch, draft: draft.checked,
+    }), { rethrow: true });
+    toast(`PR #${pr.number} criado.`);
+    call('shell:url', pr.url);
+    await refresh();
+    await loadPr({ force: true });
+  });
+  title.focus();
+}
+
+// ---------- keyboard shortcuts ----------
+const SHORTCUTS = [
+  ['Ctrl+Enter', 'Fazer commit (com o cursor na mensagem)'],
+  ['Ctrl+Shift+P', 'Push, pull ou publicar (o botão de sincronizar)'],
+  ['Ctrl+Shift+F', 'Fetch'],
+  ['Ctrl+1 / Ctrl+2', 'Alterações / Histórico'],
+  ['Ctrl+T', 'Trocar de repositório'],
+  ['Ctrl+B', 'Trocar de branch'],
+  ['Ctrl+Shift+N', 'Nova branch'],
+  ['Ctrl+Shift+A', 'Abrir no app padrão'],
+  ['Ctrl+Shift+G', 'Abrir no GitHub'],
+  ['Ctrl+Shift+R', 'Pull request da branch'],
+  ['Ctrl+Shift+S', 'Guardar alterações (stash)'],
+  ['Ctrl+,', 'Configurações'],
+  ['Ctrl+= / Ctrl+- / Ctrl+0', 'Aumentar, diminuir e voltar o zoom'],
+];
+
+function handleShortcut(e) {
+  if (!e.ctrlKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  const target = e.target instanceof Element ? e.target : document.body;
+  const inText = target.closest('input, textarea, select');
+  const run = (fn) => { e.preventDefault(); fn(); };
+  if (k === 'enter' && (target.id === 'summary' || target.id === 'description')) return run(() => $('commitForm').requestSubmit());
+  if (k === '=' || k === '+') return run(() => call('window:zoom', 1));
+  if (k === '-') return run(() => call('window:zoom', -1));
+  if (k === '0') return run(() => call('window:zoom', 0));
+  if (k === ',') return run(openSettings);
+  if (!$('modal').hidden || (inText && !e.shiftKey)) return;
+  if (!e.shiftKey) {
+    if (k === '1') return run(() => setTab('changes'));
+    if (k === '2') return run(() => setTab('history'));
+    if (k === 't') return run(() => { closePopovers(); openRepoMenu(); });
+    if (k === 'b' && S.repo) return run(() => { closePopovers(); openBranchMenu(); });
+    return;
+  }
+  if (!S.repo) return;
+  if (k === 'p') return run(sync);
+  if (k === 'f' && S.info?.remoteUrl) return run(() => busy('Fetch…', () => call('repo:fetch', S.repo)).then(() => refresh()));
+  if (k === 'n') return run(() => openNewBranchModal());
+  if (k === 'a') return run(() => openIn($('openBtn').dataset.app));
+  if (k === 'g') return run(() => $('openGithub').click());
+  if (k === 'r' && !$('prBtn').hidden) return run(openPrMenu);
+  if (k === 's' && S.info?.files.length) return run(stashChanges);
 }
 
 // ---------- settings ----------
@@ -1843,6 +2201,19 @@ async function openSettings() {
           const r = await busy('Instalando…', () => call('cli:installSkill'));
           if (r) { toast(`Skill instalada em ${r.installed.join(', ')}`); renderCliState(); }
         } }))),
+    section('IA',
+      el('p', { class: 'hint', text: 'O botão ✨ ao lado do resumo escreve a mensagem do commit a partir das alterações selecionadas, usando uma IA que já está no seu computador.' }),
+      aiProviderRow(),
+      el('label', { class: 'set-row select' }, el('span', { class: 'grow', text: 'Modelo (opcional)' }), aiModelInput()),
+      selectAiLanguage()),
+    section('Git e GitHub CLI',
+      el('p', { class: 'hint', text: 'O GitSwitch traz o próprio Git e o próprio GitHub CLI, como o GitHub Desktop. Escolha "do sistema" para usar os que estão instalados no Windows.' }),
+      toolRow('git', 'Git'),
+      toolRow('gh', 'GitHub CLI (gh)')),
+    section('Notificações',
+      checkRow('Avisar quando os checks do pull request da branch atual falharem ou passarem', 'notifyChecks')),
+    section('Atalhos de teclado',
+      el('dl', { class: 'shortcut-list' }, SHORTCUTS.flatMap(([keys, what]) => [el('dt', {}, el('kbd', { text: keys })), el('dd', { text: what, style: null })]))),
     section('Avançado',
       el('div', { class: 'set-buttons' },
         el('span', { class: 'grow muted', text: S.settings.dataDir }),

@@ -29,6 +29,14 @@ gitswitch help --json                # lista de comandos para máquinas
 
 A conta é escolhida assim: `--as <login>` se você passar; senão, a última conta usada com o repositório; senão, a dona do `origin` (ou a conta da organização); senão, a conta ativa do app. Para instalar, use **Configurações → Terminal e IA**, ou rode `node src/cli.js install`. Isso põe o comando no PATH e instala a skill [src/ai-skill.md](src/ai-skill.md) em `~/.claude/skills` e `~/.agents/skills`.
 
+## Novidades da 0.6
+
+- **Sem dependências**: o Git (MinGit) e o GitHub CLI vêm junto, então não precisa instalar nada. Em **Configurações → Git e GitHub CLI** dá para usar os do sistema.
+- **Pull requests**: o botão na barra mostra o PR da branch e o status dos checks. Por ali você cria PR, vê os outros PRs abertos e faz checkout deles. O app avisa quando os checks falham ou passam.
+- **IA**: o botão ✨ escreve a mensagem do commit com o Claude Code ou com um modelo local do Ollama.
+- **Mais Git**: tags, cherry-pick para outra branch, juntar (squash) commits locais e co-autores, tudo pelo botão direito no Histórico ou no formulário de commit.
+- **Atalhos de teclado e zoom**: a lista está em Configurações.
+
 A comparação detalhada com o GitHub Desktop está em [docs/PARIDADE.md](docs/PARIDADE.md).
 
 ## Rodar

@@ -27,6 +27,10 @@
       <span class="tb-icon" id="syncIcon">↻</span>
       <span class="tb-text"><small id="syncHint">Buscar alterações</small><strong id="syncLabel">Fetch origin</strong></span>
     </button>
+    <button class="tb" id="prBtn" aria-haspopup="true" hidden>
+      <span class="tb-icon"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7"/><path d="M18 15.5V9a3 3 0 0 0-3-3h-4"/><path d="m13 3.5-2.5 2.5L13 8.5"/></svg></span>
+      <span class="tb-text"><small id="prHint">Pull request</small><strong id="prLabel">—</strong></span>
+    </button>
     <div class="spacer"></div>
     <div class="tb-actions" id="repoActions" hidden>
       <button class="act" id="folderBtn" title="Mover, juntar ou abrir a pasta do repositório" aria-haspopup="true">
@@ -61,8 +65,18 @@
         <ul class="list" id="fileList"></ul>
         <div class="side-row" id="stashRow" hidden></div>
         <form class="commit" id="commitForm">
-          <input id="summary" placeholder="Resumo (obrigatório)" autocomplete="off" maxlength="200">
+          <div class="summary-row">
+            <input id="summary" placeholder="Resumo (obrigatório)" autocomplete="off" maxlength="200">
+            <button type="button" class="mini ai-btn" id="aiBtn" title="Escrever a mensagem com IA a partir das alterações selecionadas"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2 2.2.8-2.2.8L19 21l-.8-2.2-2.2-.8 2.2-.8z"/></svg></button>
+          </div>
           <textarea id="description" placeholder="Descrição" rows="3"></textarea>
+          <div class="coauthor-row" id="coauthorRow" hidden>
+            <input id="coauthors" placeholder="Co-autores: Nome &lt;email&gt;, separados por vírgula" list="coauthorList" autocomplete="off">
+            <datalist id="coauthorList"></datalist>
+          </div>
+          <div class="commit-extras">
+            <button type="button" class="link-btn" id="coauthorToggle">+ Co-autor</button>
+          </div>
           <label class="inline-check" id="amendRow" hidden><input type="checkbox" id="amend"> Emendar o último commit</label>
           <p class="amend-hint" id="amendHint" hidden>Esse commit já está no GitHub. Depois de emendar, será preciso forçar o envio.</p>
           <button type="submit" class="primary" id="commitBtn" disabled>Commit</button>
@@ -105,6 +119,7 @@
   <div class="popover wide" id="branchMenu" hidden></div>
   <div class="popover wide" id="folderMenu" hidden></div>
   <div class="popover" id="openMenu" hidden></div>
+  <div class="popover wide" id="prMenu" hidden></div>
 
   <!-- modals -->
   <div class="modal-backdrop" id="modal" hidden>

@@ -19,6 +19,8 @@ if (gh('release', 'view', tag).status !== 0) {
   if (made.status !== 0) process.exit(made.status ?? 1);
 }
 
+if (spawnSync('node', [require('node:path').join(__dirname, 'fetch-vendor.js')], { stdio: 'inherit' }).status !== 0) process.exit(1);
+
 const built = spawnSync('npx', ['electron-builder', '--win', 'nsis', '--publish', 'always'], { stdio: 'inherit', shell: true, env });
 if (built.status !== 0) process.exit(built.status ?? 1);
 

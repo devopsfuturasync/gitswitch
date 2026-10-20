@@ -6,7 +6,7 @@ Engenharia reversa do código aberto do GitHub Desktop (`desktop/desktop`, commi
 
 | Tema | GitHub Desktop | GitSwitch |
 |---|---|---|
-| Binário do Git | Leva o próprio Git embutido (dugite) | ⬜ Usa o Git instalado no sistema (próxima fase: embutir, para não depender da instalação) |
+| Binário do Git | Leva o próprio Git embutido (dugite) | ✅ Leva o MinGit 2.56.0.2 e o GitHub CLI 2.102.0 oficiais (com SHA-256 conferido no build); dá para trocar pelos do sistema |
 | Ambiente | `TERM=dumb` e `GIT_USER_AGENT`; ganchos (hooks) interceptados para mostrar o progresso | `TERM=dumb`, `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, `GIT_EDITOR=true` |
 | Credenciais | Credential helper "trampoline": o Git chama o Desktop, que escolhe a conta **pela origem da URL**. Isso significa **uma conta por servidor (github.com)** | Credential helper com o token da **conta escolhida**: várias contas no mesmo github.com, que é o diferencial |
 | Credenciais em filtros (LFS) | Configura o helper por `GIT_CONFIG_PARAMETERS` para o Git LFS herdar | ✅ Mesmo mecanismo (antes era `-c`, que não chega ao LFS). Testado com repositório privado; LFS em si ainda não testado |
@@ -48,13 +48,20 @@ Legenda: ✅ tem · 🟡 parcial · ⬜ ainda não
 | Ignorar arquivo (.gitignore) | ✅ | ✅ |
 | Configurações (Git global, confirmações, diff, editor, tema) | ✅ | ✅ |
 | Atualização automática | ✅ | ✅ |
-| Rebase, cherry-pick, squash, reordenar commits | ✅ | ⬜ próxima fase |
-| Pull requests (listar, checkout, criar) | ✅ | ⬜ próxima fase |
-| Tags (criar, apagar, enviar) | ✅ | ⬜ próxima fase |
-| Co-autores, signoff | ✅ | ⬜ próxima fase |
+| Cherry-pick para outra branch | ✅ | ✅ |
+| Juntar (squash) commits locais | ✅ | ✅ |
+| Reordenar commits, rebase interativo | ✅ | ⬜ |
+| Operação em andamento (merge, cherry-pick, revert, rebase): aviso e cancelar | ✅ | ✅ |
+| Pull requests: PR da branch, criar, listar e fazer checkout | ✅ | ✅ |
+| Status dos checks (CI) e notificação quando falham ou passam | ✅ | ✅ |
+| Tags: criar, apagar (também no GitHub) e enviar junto com o push | ✅ | ✅ |
+| Co-autores | ✅ | ✅ |
+| Signoff | ✅ | ⬜ |
 | Worktrees, submódulos, LFS (instalar filtros) | ✅ | ⬜ próxima fase |
 | GitHub Enterprise | ✅ | ⬜ próxima fase |
-| Mensagem de commit e resolução de conflitos com IA (Copilot) | ✅ | ⬜ próxima fase |
+| Mensagem de commit com IA | ✅ Copilot | ✅ Claude Code ou Ollama local |
+| Resolução de conflitos com IA | ✅ | ⬜ |
+| Atalhos de teclado e zoom | ✅ | ✅ |
 
 ## Como foi verificado (v0.4.0)
 
@@ -69,15 +76,15 @@ Feita com a skill [Reverse Engineer Anything](https://github.com/morluto/rea) (`
 
 | O que o artefato mostra | Tipo | GitSwitch |
 |---|---|---|
-| Distribui o próprio Git (`git version 2.53.0.windows.4`), apontado por `LOCAL_GIT_DIRECTORY` e `GIT_EXEC_PATH` | observado | ⬜ usa o Git do sistema |
+| Distribui o próprio Git (`git version 2.53.0.windows.4`), apontado por `LOCAL_GIT_DIRECTORY` e `GIT_EXEC_PATH` | observado | ✅ GitSwitch 0.6 também (MinGit 2.56.0.2) |
 | Credenciais pelo trampoline (`DESKTOP_TRAMPOLINE_TOKEN`) e tokens no cofre do Windows (`keytar.node`) | observado | ✅ token por conta, vindo do cofre do `gh` |
 | Comando `github`: só `open`, `clone [-b]` e o diretório atual; tudo só abre a janela | observado (`cli/main.ts` no source map) | ✅ `gitswitch` executa git/gh, responde em JSON e tem códigos de saída fixos |
 | Atalhos do comando em `%LOCALAPPDATA%GitHubDesktopin`, rodando com `ELECTRON_RUN_AS_NODE=1` (sem Node instalado) e com suporte a WSL | observado (`static/github.bat`, `github.sh`) | ✅ a instalação pelo app instalado agora usa o GitSwitch.exe; ⬜ WSL |
 | Janelas com `contextIsolation` desligado e `nodeIntegration` ligado | observado (expressões estáticas em `main.js`) | ✅ mais restrito: isolamento ligado, sandbox, sem Node na página |
-| Copilot: mensagem de commit gerada, resolução de conflitos, modelo escolhido por conta, provedores próprios (BYOK), modelos locais (`foundry_local_napi.node`) | observado (módulos e addons) | ⬜ próxima fase |
-| Notificações de PR: checks falhando, reviews e comentários | observado (`lib/notifications/*`) | ⬜ próxima fase |
+| Copilot: mensagem de commit gerada, resolução de conflitos, modelo escolhido por conta, provedores próprios (BYOK), modelos locais (`foundry_local_napi.node`) | observado (módulos e addons) | 🟡 mensagem de commit (Claude Code/Ollama); conflitos ⬜ |
+| Notificações de PR: checks falhando, reviews e comentários | observado (`lib/notifications/*`) | 🟡 checks (falharam/passaram); reviews e comentários ⬜ |
 | Hooks do Git com o ambiente do shell do usuário, e tela de hook que falhou | observado (`lib/hooks/*`) | 🟡 hooks rodam; falha aparece nos detalhes do erro |
-| Zoom da interface, `git-trace` e shell dos hooks como configuração | observado (chaves de armazenamento) | ⬜ |
+| Zoom da interface, `git-trace` e shell dos hooks como configuração | observado (chaves de armazenamento) | 🟡 zoom ✅; `git-trace` e shell dos hooks ⬜ |
 | Captura de microfone (`pv_recorder.node`) entre os addons do Copilot | observado: o addon está lá | uso em execução não comprovado |
 
 O Git não foi analisado com o REA: o `git.exe` é nativo e não há Ghidra, Hopper ou IDA instalados. Como o código do Git é aberto, a própria skill indica ler o código-fonte nesse caso.

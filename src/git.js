@@ -1,6 +1,8 @@
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const path = require('node:path');
 const { run } = require('./run');
+const tools = require('./tools');
 
 // Credential helper that answers with the chosen account's token. The token
 // comes from an env var so it never shows up in the process command line.
@@ -98,7 +100,7 @@ function git(cwd, args, account, opts = {}) {
     ...accountEnv(account),
   };
   const onStderr = opts.onProgress ? progressParser(opts.progressLabel || 'Git', opts.onProgress) : undefined;
-  return run('git', [...pre, ...args], { ...opts, cwd, env, onStderr }).catch((err) => {
+  return run(tools.bin('git'), [...pre, ...args], { ...opts, cwd, env, onStderr }).catch((err) => {
     throw friendly(err);
   });
 }
@@ -414,6 +416,11 @@ async function remoteUrl(repo) {
   }
 }
 
+// Fetches one refspec, e.g. pull/12/head:pr/12 for a pull request from a fork.
+function fetchRef(repo, account, refspec) {
+  return git(repo, ['fetch', 'origin', refspec], account);
+}
+
 function fetchAll(repo, account, onProgress) {
   return git(repo, ['fetch', '--all', '--prune', '--progress', '--recurse-submodules=on-demand', '--show-forced-updates'], account,
     { onProgress, progressLabel: 'Fetch' });
@@ -424,7 +431,7 @@ function pull(repo, account, onProgress) {
 }
 
 function push(repo, account, { upstream = true, force = false } = {}, onProgress) {
-  const args = ['push', '--progress'];
+  const args = ['push', '--progress', '--follow-tags'];
   if (force) args.push('--force-with-lease');
   if (!upstream) args.push('--set-upstream', 'origin', 'HEAD');
   return git(repo, args, account, { onProgress, progressLabel: 'Push' });
@@ -501,6 +508,63 @@ function abortMerge(repo) {
   return git(repo, ['merge', '--abort']);
 }
 
+// The multi-step operation waiting on the user, if any.
+async function operation(repo) {
+  const names = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'];
+  const { stdout } = await git(repo, ['rev-parse', ...names.flatMap((n) => ['--git-path', n])]);
+  const found = stdout.split(/\r?\n/).filter(Boolean).map((p) => (path.isAbsolute(p) ? p : path.join(repo, p)));
+  const has = (i) => Boolean(found[i]) && fsSync.existsSync(found[i]);
+  if (has(3) || has(4)) return 'rebase';
+  if (has(1)) return 'cherry-pick';
+  if (has(2)) return 'revert';
+  if (has(0)) return 'merge';
+  return null;
+}
+
+function abortOperation(repo, op) {
+  return git(repo, [op, '--abort']);
+}
+
+// --- tags
+function createTag(repo, account, name, sha, message) {
+  return git(repo, ['tag', '-a', name, '-m', message || name, sha], account);
+}
+
+async function deleteTag(repo, account, name, remoteToo) {
+  await git(repo, ['tag', '-d', name]);
+  if (remoteToo) await git(repo, ['push', 'origin', `:refs/tags/${name}`], account);
+}
+
+// --- cherry-pick: switches to the target branch and applies the commit there.
+async function cherryPick(repo, account, sha, branch, parents) {
+  await git(repo, ['switch', branch]);
+  try {
+    await git(repo, ['cherry-pick', ...(parents > 1 ? ['-m', '1'] : []), sha], account);
+    return 'applied';
+  } catch (err) {
+    if (await operation(repo) === 'cherry-pick') return 'conflicts';
+    throw err;
+  }
+}
+
+// --- squash: folds the newest commits down to (and including) sha into one.
+async function squash(repo, account, sha, message) {
+  const st = await status(repo);
+  if (st.files.length) throw new Error('Faça commit, guarde (stash) ou descarte as alterações antes de juntar commits.');
+  const { code } = await git(repo, ['rev-parse', '-q', '--verify', `${sha}^`], null, { allowCodes: [0, 1] });
+  if (code === 0) await git(repo, ['reset', '--soft', `${sha}^`]);
+  else await git(repo, ['update-ref', '-d', 'HEAD']);
+  await git(repo, ['commit', '-F', '-'], account, { input: message });
+}
+
+// Messages of the commits from sha up to HEAD, oldest first.
+async function messagesSince(repo, sha) {
+  const { code } = await git(repo, ['rev-parse', '-q', '--verify', `${sha}^`], null, { allowCodes: [0, 1] });
+  const range = code === 0 ? [`${sha}^..HEAD`] : ['HEAD'];
+  const { stdout } = await git(repo, ['log', '--reverse', '--format=%B%x1e', ...range]);
+  return stdout.split('\x1e').map((m) => m.trim()).filter(Boolean);
+}
+
 function sameRemote(a, b) {
   const norm = (u) => u.trim().toLowerCase().replace(/\.git$/, '').replace(/\/$/, '').replace(/^git@github\.com:/, 'https://github.com/');
   return norm(a) === norm(b);
@@ -563,5 +627,6 @@ module.exports = {
   createBranch, renameBranch, deleteBranch, merge, remoteUrl, fetchAll, pull, push, clone, init,
   isMerging, resolve, abortMerge, link, lastMessage, headCommit, diffHash, undoLastCommit, revert,
   stashList, stashPush, stashPop, stashDrop, stashShow, ignore, globalIdentity, setGlobalIdentity,
-  partialPatch, accountEnv, identityArgs, friendly,
+  partialPatch, accountEnv, identityArgs, friendly, operation, abortOperation, createTag, deleteTag,
+  cherryPick, squash, messagesSince, fetchRef,
 };
