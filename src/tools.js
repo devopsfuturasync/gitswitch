@@ -4,17 +4,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 // Packaged: <resources>/app.asar[.unpacked]/src -> tools live in <resources>.
-// Dev checkout: build/vendor (filled by `npm run vendor`).
+// Dev checkout: build/vendor/<platform>-<arch> (filled by `npm run vendor`).
 function toolsRoot() {
   const appDir = path.resolve(__dirname, '..');
   if (/app\.asar(\.unpacked)?$/i.test(appDir)) return path.dirname(appDir);
-  return path.join(appDir, 'build', 'vendor');
+  return path.join(appDir, 'build', 'vendor', `${process.platform}-${process.arch}`);
 }
 
 const ROOT = toolsRoot();
+const WIN = process.platform === 'win32';
 const BUNDLED = {
-  git: path.join(ROOT, 'git', 'cmd', 'git.exe'),
-  gh: path.join(ROOT, 'gh', 'bin', 'gh.exe'),
+  git: WIN ? path.join(ROOT, 'git', 'cmd', 'git.exe') : path.join(ROOT, 'git', 'bin', 'git'),
+  gh: path.join(ROOT, 'gh', 'bin', WIN ? 'gh.exe' : 'gh'),
 };
 
 const preference = { git: 'bundled', gh: 'bundled' };

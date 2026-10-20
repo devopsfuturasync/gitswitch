@@ -1,3 +1,5 @@
+const i18n = require('./i18n');
+const { t: _t } = i18n;
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
@@ -13,6 +15,7 @@ const install = require('./install');
 const ai = require('./ai');
 const scannerParse = require('./scanner').parseGithub;
 const { switchAccount, rememberRepoForAccount } = require('./switch');
+const platform = require('./platform');
 const tools = require('./tools');
 const { run } = require('./run');
 
@@ -31,6 +34,7 @@ const DEFAULT_SETTINGS = {
   confirmRemoveRepo: false,
   autoFetchMinutes: 5,      // 0 = off
   autoUpdate: true,
+  language: 'system',       // 'system' | 'pt' | 'en' | 'es'
   tools: { git: 'bundled', gh: 'bundled' }, // or 'system' for the PATH copies
   ai: { provider: 'claude', model: '', language: 'en' },
   zoom: 0,
@@ -44,7 +48,7 @@ async function toolVersions() {
       const { stdout } = await run(tools.bin(name), ['--version']);
       return stdout.split('\n')[0].trim();
     } catch {
-      return 'não encontrado';
+      return _t('não encontrado');
     }
   };
   return { git: await v('git'), gh: await v('gh') };
@@ -58,7 +62,7 @@ function overrides() {
 
 async function activeCredentials() {
   const login = store.get('activeAccount');
-  if (!login) throw new Error('Escolha uma conta do GitHub primeiro.');
+  if (!login) throw new Error(_t('Escolha uma conta do GitHub primeiro.'));
   return accounts.credentials(login, overrides());
 }
 
@@ -95,10 +99,11 @@ function removeRepo(repoPath) {
 
 // Opens a separate console so the user can finish the browser login there.
 function openLoginConsole() {
-  spawn('cmd.exe', ['/k', `"${tools.bin('gh')}" auth login --hostname ${accounts.HOST} --web --git-protocol https`], {
-    detached: true,
-    stdio: 'ignore',
-  }).unref();
+  const gh = tools.bin('gh');
+  const cmd = platform.isWin
+    ? `"${gh}" auth login --hostname ${accounts.HOST} --web --git-protocol https`
+    : `${platform.shQuote(gh)} auth login --hostname ${accounts.HOST} --web --git-protocol https`;
+  return platform.openTerminal(platform.home, cmd);
 }
 
 async function pickFolder(title, defaultPath) {
@@ -118,11 +123,11 @@ async function ask(type, message, detail, buttons, cancelId = buttons.length - 1
 // Moves a folder; across drives it copies, then sends the original to the Recycle Bin.
 async function moveFolder(src, destParent) {
   const dest = path.join(destParent, path.basename(src));
-  if (samePath(src, dest)) throw new Error('O repositório já está nessa pasta.');
+  if (samePath(src, dest)) throw new Error(_t('O repositório já está nessa pasta.'));
   if (path.normalize(dest).toLowerCase().startsWith(`${path.normalize(src).toLowerCase()}${path.sep}`)) {
-    throw new Error('Não dá pra mover uma pasta para dentro dela mesma.');
+    throw new Error(_t('Não dá pra mover uma pasta para dentro dela mesma.'));
   }
-  if (await scanner.exists(dest)) throw new Error(`Já existe uma pasta em ${dest}.`);
+  if (await scanner.exists(dest)) throw new Error(_t('Já existe uma pasta em {0}.', dest));
   await fs.mkdir(destParent, { recursive: true });
   try {
     await fs.rename(src, dest);
@@ -131,7 +136,7 @@ async function moveFolder(src, destParent) {
       await fs.cp(src, dest, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
       await shell.trashItem(src);
     } else if (['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) {
-      throw new Error('Algum programa está usando essa pasta (VS Code, terminal, Explorer…). Feche e tente de novo.');
+      throw new Error(_t('Algum programa está usando essa pasta (editor, terminal, gerenciador de arquivos…). Feche e tente de novo.'));
     } else {
       throw err;
     }
@@ -169,7 +174,7 @@ const handlers = {
     return { login, repo };
   },
   async 'accounts:add'() {
-    openLoginConsole();
+    await openLoginConsole();
   },
   async 'accounts:reload'() {
     accounts.clearCache();
@@ -189,7 +194,7 @@ const handlers = {
     setAccountDir(login, dir);
   },
   async 'accounts:chooseFolder'(login) {
-    const dir = await pickFolder(`Pasta dos repositórios de @${login}`, accountDir(login));
+    const dir = await pickFolder(_t('Pasta dos repositórios de @{0}', login), accountDir(login));
     if (dir) setAccountDir(login, dir);
     return dir;
   },
@@ -239,7 +244,7 @@ const handlers = {
   },
   async 'repos:remove'(repoPath) {
     if (settings().confirmRemoveRepo) {
-      const choice = await ask('question', `Tirar ${path.basename(repoPath)} da lista?`, 'A pasta continua no computador.', ['Tirar da lista', 'Cancelar']);
+      const choice = await ask('question', _t('Tirar {0} da lista?', path.basename(repoPath)), _t('A pasta continua no computador.'), [_t('Tirar da lista'), _t('Cancelar')]);
       if (choice !== 0) return false;
     }
     removeRepo(repoPath);
@@ -249,13 +254,13 @@ const handlers = {
     for (const r of list) addRepo(r.path, r.account, { select: false });
   },
   async 'repos:addExisting'() {
-    const dir = await pickFolder('Adicionar repositório local', accountDir(store.get('activeAccount')));
+    const dir = await pickFolder(_t('Adicionar repositório local'), accountDir(store.get('activeAccount')));
     if (!dir) return null;
     try {
       return addRepo(await git.toplevel(dir), null);
     } catch {
-      const choice = await ask('question', 'Essa pasta não é um repositório Git.',
-        `Quer criar um repositório novo em:\n${dir}`, ['Criar repositório', 'Cancelar']);
+      const choice = await ask('question', _t('Essa pasta não é um repositório Git.'),
+        _t('Quer criar um repositório novo em:\n{0}', dir), [_t('Criar repositório'), _t('Cancelar')]);
       if (choice !== 0) return null;
       await git.init(dir);
       return addRepo(dir, null);
@@ -266,7 +271,7 @@ const handlers = {
     return github.repos(c.token);
   },
   async 'repos:chooseCloneDir'(current) {
-    return pickFolder('Pasta onde clonar', current);
+    return pickFolder(_t('Pasta onde clonar'), current);
   },
   async 'repos:cloneDir'() {
     const login = store.get('activeAccount');
@@ -304,9 +309,9 @@ const handlers = {
     if (settings().confirmDiscard) {
       const names = files.map((f) => f.path);
       const choice = await ask('warning',
-        names.length === 1 ? `Descartar as alterações em ${names[0]}?` : `Descartar as alterações em ${names.length} arquivos?`,
-        'A versão atual dos arquivos vai para a Lixeira, de onde dá para recuperar.',
-        ['Descartar', 'Cancelar']);
+        names.length === 1 ? _t('Descartar as alterações em {0}?', names[0]) : _t('Descartar as alterações em {0} arquivos?', names.length),
+        _t('A versão atual dos arquivos vai para a Lixeira, de onde dá para recuperar.'),
+        [_t('Descartar'), _t('Cancelar')]);
       if (choice !== 0) return false;
     }
     await git.discard(repo, files, initial, (p) => shell.trashItem(p));
@@ -326,8 +331,8 @@ const handlers = {
     await git.createTag(repo, c, name, sha, message);
   },
   async 'repo:deleteTag'(repo, name) {
-    const choice = await ask('question', `Apagar a tag ${name}?`, 'Se ela já foi enviada, você pode apagá-la no GitHub também.',
-      ['Apagar só aqui', 'Apagar aqui e no GitHub', 'Cancelar']);
+    const choice = await ask('question', _t('Apagar a tag {0}?', name), _t('Se ela já foi enviada, você pode apagá-la no GitHub também.'),
+      [_t('Apagar só aqui'), _t('Apagar aqui e no GitHub'), _t('Cancelar')]);
     if (choice === 2) return false;
     const c = await activeCredentials();
     await git.deleteTag(repo, c, name, choice === 1);
@@ -382,7 +387,7 @@ const handlers = {
   },
   async 'pr:create'(repo, data) {
     const gh = scannerParse(await git.remoteUrl(repo));
-    if (!gh) throw new Error('Esse repositório não está no GitHub.');
+    if (!gh) throw new Error(_t('Esse repositório não está no GitHub.'));
     const c = await activeCredentials();
     const st = await git.status(repo);
     if (!st.upstream) await git.push(repo, c, { upstream: false }, progress);
@@ -453,8 +458,8 @@ const handlers = {
       await git.deleteBranch(repo, name, false);
     } catch (err) {
       if (err.kind !== 'not-merged') throw err;
-      const choice = await ask('warning', `A branch ${name} tem commits que não estão em nenhuma outra.`,
-        'Apagar mesmo assim? Esses commits deixam de aparecer.', ['Apagar mesmo assim', 'Cancelar']);
+      const choice = await ask('warning', _t('A branch {0} tem commits que não estão em nenhuma outra.', name),
+        _t('Apagar mesmo assim? Esses commits deixam de aparecer.'), [_t('Apagar mesmo assim'), _t('Cancelar')]);
       if (choice !== 0) return false;
       await git.deleteBranch(repo, name, true);
     }
@@ -476,9 +481,9 @@ const handlers = {
   async 'repo:push'(repo, hasUpstream, force) {
     const c = await activeCredentials();
     if (force && settings().confirmForcePush) {
-      const choice = await ask('warning', 'Forçar o envio?',
-        'A branch no GitHub vai ficar igual à sua, e os commits que só existem lá serão substituídos. O envio é cancelado se alguém mandou algo novo desde o seu último Fetch.',
-        ['Forçar envio', 'Cancelar']);
+      const choice = await ask('warning', _t('Forçar o envio?'),
+        _t('A branch no GitHub vai ficar igual à sua, e os commits que só existem lá serão substituídos. O envio é cancelado se alguém mandou algo novo desde o seu último Fetch.'),
+        [_t('Forçar envio'), _t('Cancelar')]);
       if (choice !== 0) return false;
     }
     await git.push(repo, c, { upstream: hasUpstream, force }, progress);
@@ -487,13 +492,13 @@ const handlers = {
   },
   async 'repo:stashPush'(repo, branch) {
     const c = await activeCredentials();
-    await git.stashPush(repo, c, `GitSwitch: ${branch || 'alterações'}`);
+    await git.stashPush(repo, c, `GitSwitch: ${branch || _t('alterações')}`);
   },
   async 'repo:stashPop'(repo, ref) {
     await git.stashPop(repo, ref);
   },
   async 'repo:stashDrop'(repo, ref) {
-    const choice = await ask('warning', 'Descartar estas alterações guardadas?', 'Elas não vão para a Lixeira.', ['Descartar', 'Cancelar']);
+    const choice = await ask('warning', _t('Descartar estas alterações guardadas?'), _t('Elas não vão para a Lixeira.'), [_t('Descartar'), _t('Cancelar')]);
     if (choice !== 0) return false;
     await git.stashDrop(repo, ref);
     return true;
@@ -508,7 +513,7 @@ const handlers = {
   // --- moving and linking folders
   async 'repo:move'(repo, destParent) {
     const rec = store.get('repos').find((r) => samePath(r.path, repo));
-    const parent = destParent || await pickFolder(`Mover ${path.basename(repo)} para…`, accountDir(rec?.account || store.get('activeAccount')));
+    const parent = destParent || await pickFolder(_t('Mover {0} para…', path.basename(repo)), accountDir(rec?.account || store.get('activeAccount')));
     if (!parent) return null;
     const dest = await moveFolder(repo, parent);
     removeRepo(repo);
@@ -517,23 +522,23 @@ const handlers = {
   // This repo (cloned from GitHub) gets joined into a folder the user already has.
   async 'repo:linkFolder'(repo) {
     const url = await git.remoteUrl(repo);
-    if (!url) throw new Error('Esse repositório não está ligado ao GitHub.');
+    if (!url) throw new Error(_t('Esse repositório não está ligado ao GitHub.'));
     const c = await activeCredentials();
-    const target = await pickFolder('Pasta existente para juntar com o GitHub', path.dirname(repo));
+    const target = await pickFolder(_t('Pasta existente para juntar com o GitHub'), path.dirname(repo));
     if (!target) return null;
-    if (samePath(target, repo)) throw new Error('Escolha uma pasta diferente desta.');
+    if (samePath(target, repo)) throw new Error(_t('Escolha uma pasta diferente desta.'));
     const { result } = await git.link(target, url, c);
     const linked = addRepo(target, c.login);
 
     const old = await git.status(repo);
     const clean = !old.files.length && !old.ahead;
     const buttons = clean
-      ? ['Mandar a cópia antiga para a Lixeira', 'Só tirar da lista', 'Manter as duas']
-      : ['Só tirar da lista', 'Manter as duas'];
-    const choice = await ask('question', 'E a cópia antiga?',
+      ? [_t('Mandar a cópia antiga para a Lixeira'), _t('Só tirar da lista'), _t('Manter as duas')]
+      : [_t('Só tirar da lista'), _t('Manter as duas')];
+    const choice = await ask('question', _t('E a cópia antiga?'),
       clean
-        ? `${repo}\n\nTudo dela já está no GitHub, então não é mais necessária.`
-        : `${repo}\n\nEla ainda tem alterações ou commits que não foram para o GitHub, então não vou apagar.`,
+        ? _t('{0}\n\nTudo dela já está no GitHub, então não é mais necessária.', repo)
+        : _t('{0}\n\nEla ainda tem alterações ou commits que não foram para o GitHub, então não vou apagar.', repo),
       buttons);
     const picked = buttons[choice];
     if (picked === 'Mandar a cópia antiga para a Lixeira') {
@@ -543,14 +548,14 @@ const handlers = {
       removeRepo(repo);
     }
     store.set('selectedRepo', linked);
-    return { path: linked, message: LINK_MESSAGES[result] };
+    return { path: linked, message: _t(LINK_MESSAGES[result]) };
   },
   // A local-only repo gets connected to a GitHub repository.
   async 'repo:connect'(repo, url) {
     const c = await activeCredentials();
     const { result } = await git.link(repo, url, c);
     rememberAccount(repo, c.login);
-    return { path: repo, message: LINK_MESSAGES[result] };
+    return { path: repo, message: _t(LINK_MESSAGES[result]) };
   },
 
   // --- open in
@@ -561,7 +566,7 @@ const handlers = {
   async 'apps:open'(id, dir) {
     const { editors, clis } = await apps.detect();
     const target = [...editors, ...clis, ...store.get('customApps')].find((a) => a.id === id);
-    if (!target) throw new Error('Esse app não foi encontrado.');
+    if (!target) throw new Error(_t('Esse app não foi encontrado.'));
     await apps.launch(target, dir);
     store.set('openWith', id);
   },
@@ -578,7 +583,7 @@ const handlers = {
   },
   async 'apps:pickExe'() {
     const pick = await dialog.showOpenDialog(win, {
-      title: 'Escolha o programa',
+      title: _t('Escolha o programa'),
       defaultPath: process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs') : undefined,
       filters: [{ name: 'Programas', extensions: ['exe', 'cmd', 'bat'] }],
       properties: ['openFile'],
@@ -603,7 +608,7 @@ const handlers = {
   // --- settings
   async 'settings:get'() {
     return {
-      ...settings(), globalIdentity: await git.globalIdentity(), dataDir: app.getPath('userData'), version: app.getVersion(),
+      ...settings(), globalIdentity: await git.globalIdentity(), dataDir: app.getPath('userData'), version: app.getVersion(), platform: process.platform,
       toolInfo: { ...tools.describe(), versions: await toolVersions() },
     };
   },
@@ -611,6 +616,15 @@ const handlers = {
     store.set('settings', { ...settings(), ...patch });
     applySettings();
     return settings();
+  },
+  async 'settings:languages'() {
+    return { current: settings().language, resolved: i18n.language(), names: i18n.NAMES };
+  },
+  // A language change reloads the window so every text is rebuilt.
+  async 'settings:setLanguage'(code) {
+    store.set('settings', { ...settings(), language: code });
+    applyLanguage();
+    setTimeout(() => win?.webContents.reload(), 50);
   },
   async 'settings:setGlobalIdentity'(identity) {
     await git.setGlobalIdentity(identity);
@@ -653,6 +667,16 @@ const handlers = {
     if (/^https:\/\/github\.com\//.test(url)) await shell.openExternal(url);
   },
 };
+
+// The OS language unless the user picked one in Settings.
+function applyLanguage() {
+  const chosen = settings().language;
+  i18n.setLanguage(chosen && chosen !== 'system' ? chosen : i18n.pick([...app.getPreferredSystemLanguages(), app.getLocale()]));
+}
+
+ipcMain.on('i18n:get', (e) => {
+  e.returnValue = { lang: i18n.language(), locale: i18n.locale(), dict: i18n.dictionary() };
+});
 
 for (const [name, fn] of Object.entries(handlers)) {
   ipcMain.handle(name, async (_e, ...args) => {
@@ -702,13 +726,24 @@ app.setAppUserModelId('com.danilogiles.gitswitch');
 // Lets a dev copy run next to the installed app without sharing its settings.
 if (process.env.GITSWITCH_DATA) app.setPath('userData', process.env.GITSWITCH_DATA);
 
-app.whenReady().then(() => {
+// macOS: without an application menu, Cmd+C/V/X/A and Cmd+Q do nothing.
+function macMenu() {
+  if (!platform.isMac) return;
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'appMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' },
+  ]));
+}
+
+app.whenReady().then(async () => {
+  await platform.adoptShellPath();
+  macMenu();
   let warned = false;
   store = new Store(app.getPath('userData'), (err) => {
     if (warned || !win) return;
     warned = true;
-    win.webContents.send('store:error', `Não consegui salvar as configurações em ${store.file}: ${err.message}`);
+    win.webContents.send('store:error', _t('Não consegui salvar as configurações em {0}: {1}', store.file, err.message));
   });
+  applyLanguage();
   createWindow();
   applySettings();
   updater.setup((s) => win?.webContents.send('update:state', s));
@@ -716,3 +751,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('activate', () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });

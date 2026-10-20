@@ -1,27 +1,34 @@
-// Builds the installer and publishes it as a GitHub release, which is what
-// installed copies check for updates. Bump "version" in package.json first.
-// The token comes from the GitHub CLI login of the account that owns the repo.
+// Starts a release of all platforms: tags HEAD as v<version> and pushes the
+// tag with the repo owner's account; GitHub Actions (.github/workflows/
+// release.yml) then builds Windows, macOS and Linux and publishes them.
+// Bump "version" in package.json and push main first.
 //
-// The release is created as a draft up front: when electron-builder creates
-// it itself, its parallel uploads race to create it and one fails (422 "must
-// have a valid tag"), leaving the release without latest.yml.
-const { execFileSync, spawnSync } = require('node:child_process');
+//   npm run release          # tag + push, CI builds everything
+//   npm run release:local    # Windows only, built and published from here
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const pkg = require('../package.json');
+const accounts = require('../src/accounts');
+const git = require('../src/git');
 
 const { owner, repo } = pkg.build.publish[0];
 const tag = `v${pkg.version}`;
-const token = execFileSync('gh', ['auth', 'token', '--hostname', 'github.com', '--user', owner], { encoding: 'utf8' }).trim();
-const env = { ...process.env, GH_TOKEN: token };
-const gh = (...args) => spawnSync('gh', ['--repo', `${owner}/${repo}`, ...args], { stdio: 'inherit', env });
+const root = path.join(__dirname, '..');
 
-if (gh('release', 'view', tag).status !== 0) {
-  const made = gh('release', 'create', tag, '--draft', '--target', 'main', '--title', `GitSwitch ${pkg.version}`, '--notes', `GitSwitch ${pkg.version}`);
-  if (made.status !== 0) process.exit(made.status ?? 1);
-}
+(async () => {
+  const st = await git.status(root);
+  if (st.files.length) throw new Error('Commit or stash your changes first.');
+  if (!st.upstream || st.ahead) throw new Error('Push main first (the tag must point at a commit GitHub has).');
 
-if (spawnSync('node', [require('node:path').join(__dirname, 'fetch-vendor.js')], { stdio: 'inherit' }).status !== 0) process.exit(1);
-
-const built = spawnSync('npx', ['electron-builder', '--win', 'nsis', '--publish', 'always'], { stdio: 'inherit', shell: true, env });
-if (built.status !== 0) process.exit(built.status ?? 1);
-
-process.exit(gh('release', 'edit', tag, '--draft=false', '--latest').status ?? 1);
+  const creds = await accounts.credentials(owner, {});
+  const exists = spawnSync('git', ['rev-parse', '-q', '--verify', `refs/tags/${tag}`], { cwd: root }).status === 0;
+  if (!exists) await git.createTag(root, creds, tag, 'HEAD', `GitSwitch ${pkg.version}`);
+  const pushed = spawnSync(require('../src/tools').bin('git'), ['push', 'origin', tag], {
+    cwd: root, stdio: 'inherit', env: { ...process.env, ...git.accountEnv(creds) },
+  });
+  if (pushed.status !== 0) throw new Error(`Could not push ${tag}.`);
+  console.log(`Pushed ${tag}. Builds run at https://github.com/${owner}/${repo}/actions`);
+})().catch((err) => {
+  console.error(err.message);
+  process.exit(1);
+});

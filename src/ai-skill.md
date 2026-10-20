@@ -45,6 +45,10 @@ This machine has more than one GitHub account logged in with the GitHub CLI. Pla
 
 When the user asks to work as another account, run `gitswitch use <login> --json`. The reply's `repo` is the repository last used with that account (or `null`); `cd` there before continuing. Pass `--keep-repo` to switch the account for the repository you are already in. The GitSwitch app picks up the change when its window is focused.
 
+## Language
+
+Output is English when it goes to a pipe or with `--json` (what agents see), and in the system language at an interactive terminal. Set `GITSWITCH_LANG=en` to force English.
+
 ## Exit codes
 
 `0` ok · `1` git/gh failed · `2` usage error · `3` authentication or permission · `4` not found (repo, account, path)

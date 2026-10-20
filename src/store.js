@@ -18,9 +18,7 @@ const DEFAULTS = {
 
 // Where the app keeps state.json; the CLI reads the same file.
 function defaultDataDir() {
-  if (process.env.GITSWITCH_DATA) return process.env.GITSWITCH_DATA;
-  const roaming = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-  return path.join(roaming, 'GitSwitch');
+  return require('./platform').dataDir();
 }
 
 class Store {

@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  platform: process.platform,
+  i18n: ipcRenderer.sendSync('i18n:get'),
   // Calls a main-process handler; throws with its message on failure.
   async call(name, ...args) {
     const res = await ipcRenderer.invoke(name, ...args);

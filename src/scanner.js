@@ -33,12 +33,14 @@ async function childDirs(dir) {
 async function roots() {
   const home = os.homedir();
   const out = [];
-  for (const letter of 'CDEFGH') {
-    if (await exists(`${letter}:\\`)) out.push(`${letter}:\\`);
+  if (process.platform === 'win32') {
+    for (const letter of 'CDEFGH') {
+      if (await exists(`${letter}:\\`)) out.push(`${letter}:\\`);
+    }
   }
   out.push(home);
   for (const sub of ['Documents', 'Desktop', 'source', path.join('source', 'repos'), 'GitHub',
-    path.join('Documents', 'GitHub'), 'Projects', 'dev', 'code', 'repos']) {
+    path.join('Documents', 'GitHub'), 'Projects', 'projects', 'dev', 'Developer', 'code', 'Code', 'repos', 'src', 'git', 'workspace']) {
     out.push(path.join(home, sub));
   }
   return out;

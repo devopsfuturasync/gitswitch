@@ -1,0 +1,99 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds Windows, macOS and Linux and publishes them as one
+# GitHub release (installed copies update from it). Running it by hand with
+# "publish" off only builds and keeps the installers as workflow artifacts.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to the GitHub release (off = build and keep artifacts only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+
+jobs:
+  # One draft up front: parallel uploads that each create the release race
+  # and fail with 422.
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches package.json
+        if: github.event_name == 'push'
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME does not match package.json version $version"; exit 1; }
+      - name: Create the draft release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release view "v$version" >/dev/null 2>&1 || \
+            gh release create "v$version" --draft --target "$GITHUB_SHA" --title "GitSwitch $version" --notes "GitSwitch $version"
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            vendor: win32-x64
+            args: --win nsis --x64
+          - os: macos-latest
+            vendor: darwin-x64 darwin-arm64
+            args: --mac --x64 --arm64
+          - os: ubuntu-latest
+            vendor: linux-x64
+            args: --linux --x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Fetch bundled tools (checked against pinned SHA-256)
+        run: node build/fetch-vendor.js ${{ matrix.vendor }}
+      - name: Build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder ${{ matrix.args }} --publish ${{ env.PUBLISH == 'true' && 'always' || 'never' }}
+      - name: Keep the installers
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitswitch-${{ matrix.os }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.yml
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release edit "v$version" --draft=false --latest

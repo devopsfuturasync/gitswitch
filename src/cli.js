@@ -2,6 +2,13 @@
 // gitswitch: GitSwitch from the terminal, built for people and coding agents.
 // Every command can answer in JSON (--json or GITSWITCH_JSON=1), never
 // prompts, and exits with a fixed code per kind of failure.
+const i18n = require('./i18n');
+const { t: _t } = i18n;
+// People at a terminal get their language; JSON output and pipes (scripts,
+// coding agents) get stable English. GITSWITCH_LANG overrides both.
+i18n.setLanguage(process.env.GITSWITCH_LANG
+  ? i18n.pick([process.env.GITSWITCH_LANG])
+  : (process.argv.includes('--json') || process.env.GITSWITCH_JSON === '1' || !process.stdout.isTTY) ? 'en' : i18n.pick(i18n.systemPreferences()));
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -19,23 +26,23 @@ const EXIT = { ok: 0, failed: 1, usage: 2, auth: 3, notfound: 4 };
 const KIND_EXIT = { usage: EXIT.usage, auth: EXIT.auth, notfound: EXIT.notfound, notrepo: EXIT.notfound, 'missing-ref': EXIT.notfound };
 
 const COMMANDS = {
-  accounts: { usage: 'gitswitch accounts', summary: 'Contas do GitHub logadas no gh, com identidade de commit e pasta' },
-  whoami: { usage: 'gitswitch whoami [caminho] [--as login]', summary: 'Qual conta será usada neste repositório e por quê' },
-  status: { usage: 'gitswitch status [caminho]', summary: 'Branch, upstream, ahead/behind, arquivos alterados, stashes e merge' },
-  git: { usage: 'gitswitch git [--as login] [-C caminho] -- <argumentos do git>', summary: 'Roda qualquer comando git autenticado com a conta certa' },
-  gh: { usage: 'gitswitch gh [--as login] [-C caminho] -- <argumentos do gh>', summary: 'Roda o GitHub CLI com o token da conta certa' },
-  fetch: { usage: 'gitswitch fetch [caminho] [--as login]', summary: 'Busca as alterações do GitHub' },
-  pull: { usage: 'gitswitch pull [caminho] [--as login]', summary: 'Traz e junta os commits do GitHub' },
-  push: { usage: 'gitswitch push [caminho] [--as login] [--force]', summary: 'Envia a branch (publica se ainda não existe; --force usa --force-with-lease)' },
-  commit: { usage: 'gitswitch commit -m "mensagem" [--all | arquivos…] [--amend] [-C caminho] [--as login]', summary: 'Commit com o nome e e-mail da conta' },
-  clone: { usage: 'gitswitch clone <dono/repo | url> [--as login] [--dir pasta]', summary: 'Clona na pasta da conta e adiciona ao GitSwitch' },
-  repos: { usage: 'gitswitch repos [--account login]', summary: 'Repositórios que o GitSwitch conhece' },
-  use: { usage: 'gitswitch use <login> [--keep-repo]', summary: 'Troca a conta ativa do app e abre o último repositório usado com ela (devolve o caminho em "repo")' },
-  folder: { usage: 'gitswitch folder <login> [caminho]', summary: 'Mostra ou define a pasta de uma conta' },
-  detect: { usage: 'gitswitch detect [--add]', summary: 'Procura repositórios no disco por conta; --add adiciona os que faltam' },
-  open: { usage: 'gitswitch open [caminho] [--app id]', summary: 'Abre o repositório no app padrão (ou em --app)' },
-  install: { usage: 'gitswitch install [--no-skill]', summary: 'Coloca o gitswitch no PATH e instala a skill para agentes de IA' },
-  help: { usage: 'gitswitch help [comando]', summary: 'Esta ajuda (com --json, a lista de comandos para máquinas)' },
+  accounts: { usage: 'gitswitch accounts', summary: _t('Contas do GitHub logadas no gh, com identidade de commit e pasta') },
+  whoami: { usage: _t('gitswitch whoami [caminho] [--as login]'), summary: _t('Qual conta será usada neste repositório e por quê') },
+  status: { usage: _t('gitswitch status [caminho]'), summary: _t('Branch, upstream, ahead/behind, arquivos alterados, stashes e merge') },
+  git: { usage: _t('gitswitch git [--as login] [-C caminho] -- <argumentos do git>'), summary: _t('Roda qualquer comando git autenticado com a conta certa') },
+  gh: { usage: _t('gitswitch gh [--as login] [-C caminho] -- <argumentos do gh>'), summary: _t('Roda o GitHub CLI com o token da conta certa') },
+  fetch: { usage: _t('gitswitch fetch [caminho] [--as login]'), summary: _t('Busca as alterações do GitHub') },
+  pull: { usage: _t('gitswitch pull [caminho] [--as login]'), summary: _t('Traz e junta os commits do GitHub') },
+  push: { usage: _t('gitswitch push [caminho] [--as login] [--force]'), summary: _t('Envia a branch (publica se ainda não existe; --force usa --force-with-lease)') },
+  commit: { usage: _t('gitswitch commit -m "mensagem" [--all | arquivos…] [--amend] [-C caminho] [--as login]'), summary: _t('Commit com o nome e e-mail da conta') },
+  clone: { usage: _t('gitswitch clone <dono/repo | url> [--as login] [--dir pasta]'), summary: _t('Clona na pasta da conta e adiciona ao GitSwitch') },
+  repos: { usage: 'gitswitch repos [--account login]', summary: _t('Repositórios que o GitSwitch conhece') },
+  use: { usage: 'gitswitch use <login> [--keep-repo]', summary: _t('Troca a conta ativa do app e abre o último repositório usado com ela (devolve o caminho em "repo")') },
+  folder: { usage: _t('gitswitch folder <login> [caminho]'), summary: _t('Mostra ou define a pasta de uma conta') },
+  detect: { usage: 'gitswitch detect [--add]', summary: _t('Procura repositórios no disco por conta; --add adiciona os que faltam') },
+  open: { usage: _t('gitswitch open [caminho] [--app id]'), summary: _t('Abre o repositório no app padrão (ou em --app)') },
+  install: { usage: 'gitswitch install [--no-skill]', summary: _t('Coloca o gitswitch no PATH e instala a skill para agentes de IA') },
+  help: { usage: _t('gitswitch help [comando]'), summary: _t('Esta ajuda (com --json, a lista de comandos para máquinas)') },
 };
 
 class CliError extends Error {
@@ -99,13 +106,14 @@ const endProgress = () => { if (!JSON_MODE && process.stderr.isTTY) process.stde
 
 // ---------- state ----------
 const store = new Store();
+require('./platform').adoptShellPath(); // harmless when already in a shell
 tools.setPreference(store.get('settings')?.tools);
 const overrides = () => store.get('identities');
 const samePath = (a, b) => Boolean(a && b) && path.normalize(a).toLowerCase() === path.normalize(b).toLowerCase();
 
 async function allAccounts() {
   const list = await accounts.list(overrides());
-  if (!list.length) throw new CliError('Nenhuma conta do GitHub logada. Rode: gh auth login', 'auth');
+  if (!list.length) throw new CliError(_t('Nenhuma conta do GitHub logada. Rode: gh auth login'), 'auth');
   const active = list.some((a) => a.login === store.get('activeAccount'))
     ? store.get('activeAccount')
     : (list.find((a) => a.ghActive) || list[0]).login;
@@ -129,7 +137,7 @@ async function resolve(dir, asLogin) {
   const pick = (a, reason) => ({ account: a, reason, root, remote });
   if (asLogin) {
     const a = find(asLogin);
-    if (!a) throw new CliError(`A conta ${asLogin} não está logada. Contas: ${list.map((x) => x.login).join(', ')}`, 'notfound');
+    if (!a) throw new CliError(_t('A conta {0} não está logada. Contas: {1}', asLogin, list.map((x) => x.login).join(', ')), 'notfound');
     return pick(a, 'flag');
   }
   const rec = root && store.get('repos').find((r) => samePath(r.path, root));
@@ -146,7 +154,7 @@ async function resolve(dir, asLogin) {
 
 async function needRepo(dir) {
   const root = await repoRoot(dir);
-  if (!root) throw new CliError(`${dir} não é um repositório Git.`, 'notrepo');
+  if (!root) throw new CliError(_t('{0} não é um repositório Git.', dir), 'notrepo');
   return root;
 }
 
@@ -165,10 +173,10 @@ function addRepo(p, login) {
 }
 
 const REASONS = {
-  flag: 'escolhida com --as',
-  repo: 'última conta usada com este repositório',
-  owner: 'dona do repositório no GitHub',
-  active: 'conta ativa do app',
+  flag: _t('escolhida com --as'),
+  repo: _t('última conta usada com este repositório'),
+  owner: _t('dona do repositório no GitHub'),
+  active: _t('conta ativa do app'),
 };
 
 // ---------- commands ----------
@@ -187,7 +195,7 @@ const run = {
     const r = await resolve(opts.C || pos[0] || process.cwd(), opts.as);
     print({
       account: r.account.login, reason: r.reason, identity: r.account.identity, repo: r.root, remote: r.remote,
-    }, (d) => `${d.account} (${REASONS[d.reason]})\ncommits como ${d.identity.name} <${d.identity.email}>${d.repo ? `\nrepositório: ${d.repo}` : ''}`);
+    }, (d) => `${d.account} (${REASONS[d.reason]})\n${_t('commits como {0}', `${d.identity.name} <${d.identity.email}>`)}${d.repo ? _t('\nrepositório: {0}', d.repo) : ''}`);
   },
 
   async status({ pos, opts }) {
@@ -202,8 +210,8 @@ const run = {
       merging, initial: st.initial, head, files: st.files, stashes,
     }, (d) => [
       `${d.repo}  [${d.account}]`,
-      `branch ${d.branch || '(detached)'}${d.upstream ? ` → ${d.upstream}` : ' (não publicada)'}  ↑${d.ahead} ↓${d.behind}${d.merging ? '  JUNTANDO' : ''}`,
-      d.files.length ? d.files.map((f) => `  ${f.kind.padEnd(9)} ${f.orig ? `${f.orig} → ` : ''}${f.path}`).join('\n') : '  sem alterações',
+      `branch ${d.branch || '(detached)'}${d.upstream ? ` → ${d.upstream}` : _t(' (não publicada)')}  ↑${d.ahead} ↓${d.behind}${d.merging ? '  JUNTANDO' : ''}`,
+      d.files.length ? d.files.map((f) => `  ${f.kind.padEnd(9)} ${f.orig ? `${f.orig} → ` : ''}${f.path}`).join('\n') : _t('  sem alterações'),
       d.stashes.length ? `${d.stashes.length} stash(es)` : '',
     ].filter(Boolean).join('\n'));
   },
@@ -227,7 +235,7 @@ const run = {
     await git.fetchAll(root, creds, progress).finally(endProgress);
     const st = await git.status(root);
     print({ action: 'fetch', account: creds.login, branch: st.branch, ahead: st.ahead, behind: st.behind },
-      (d) => `fetch ok como ${d.account}: ↑${d.ahead} ↓${d.behind}`);
+      (d) => _t('fetch ok como {0}: ↑{1} ↓{2}', d.account, d.ahead, d.behind));
   },
 
   async pull({ pos, opts }) {
@@ -236,7 +244,7 @@ const run = {
     const creds = await accounts.credentials(who.account.login, overrides());
     await git.pull(root, creds, progress).finally(endProgress);
     rememberRepo(root, creds.login);
-    print({ action: 'pull', account: creds.login }, (d) => `pull ok como ${d.account}`);
+    print({ action: 'pull', account: creds.login }, (d) => _t('pull ok como {0}', d.account));
   },
 
   async push({ pos, opts }) {
@@ -244,15 +252,15 @@ const run = {
     const who = await resolve(root, opts.as);
     const creds = await accounts.credentials(who.account.login, overrides());
     const st = await git.status(root);
-    if (!st.branch) throw new CliError('Você está fora de uma branch (HEAD destacado). Crie uma branch antes de enviar.', 'usage');
+    if (!st.branch) throw new CliError(_t('Você está fora de uma branch (HEAD destacado). Crie uma branch antes de enviar.'), 'usage');
     await git.push(root, creds, { upstream: Boolean(st.upstream), force: Boolean(opts.force) }, progress).finally(endProgress);
     rememberRepo(root, creds.login);
     print({ action: st.upstream ? 'push' : 'publish', account: creds.login, branch: st.branch, forced: Boolean(opts.force) },
-      (d) => `${d.action === 'publish' ? 'branch publicada' : 'push ok'} como ${d.account} (${d.branch})`);
+      (d) => (d.action === 'publish' ? _t('branch publicada como {0} ({1})', d.account, d.branch) : _t('push ok como {0} ({1})', d.account, d.branch)));
   },
 
   async commit({ pos, opts }) {
-    if (!opts.message) throw new CliError('Falta a mensagem: use -m "mensagem".');
+    if (!opts.message) throw new CliError(_t('Falta a mensagem: use -m "mensagem".'));
     const root = await needRepo(opts.C || process.cwd());
     const who = await resolve(root, opts.as);
     const creds = await accounts.credentials(who.account.login, overrides());
@@ -263,27 +271,27 @@ const run = {
       const wanted = pos.map((p) => path.relative(root, path.resolve(opts.C || process.cwd(), p)).replaceAll('\\', '/'));
       files = st.files.filter((f) => wanted.some((w) => f.path === w || f.path.startsWith(`${w}/`) || f.orig === w));
       const missing = wanted.filter((w) => !files.some((f) => f.path === w || f.path.startsWith(`${w}/`) || f.orig === w));
-      if (missing.length) throw new CliError(`Sem alterações em: ${missing.join(', ')}`, 'notfound');
+      if (missing.length) throw new CliError(_t('Sem alterações em: {0}', missing.join(', ')), 'notfound');
     }
-    if (!files.length && !opts.amend) throw new CliError('Nada para commitar. Diga os arquivos ou use --all.');
+    if (!files.length && !opts.amend) throw new CliError(_t('Nada para commitar. Diga os arquivos ou use --all.'));
     if (st.merging) files = st.files;
     await git.commit(root, creds, files, opts.message, { initial: st.initial, merging: st.merging, amend: Boolean(opts.amend) });
     rememberRepo(root, creds.login);
     const head = await git.headCommit(root);
     print({ action: opts.amend ? 'amend' : 'commit', account: creds.login, identity: { name: creds.name, email: creds.email }, sha: head?.sha, files: files.map((f) => f.path) },
-      (d) => `${d.action === 'amend' ? 'emendado' : 'commit'} ${d.sha?.slice(0, 7)} como ${d.identity.name} <${d.identity.email}> (${d.files.length} arquivo(s))`);
+      (d) => _t(d.action === 'amend' ? 'emendado {0} como {1} ({2} arquivo(s))' : 'commit {0} como {1} ({2} arquivo(s))', d.sha?.slice(0, 7), `${d.identity.name} <${d.identity.email}>`, d.files.length));
   },
 
   async clone({ pos, opts }) {
     const spec = pos[0];
-    if (!spec) throw new CliError('Diga o repositório: gitswitch clone dono/repo');
+    if (!spec) throw new CliError(_t('Diga o repositório: gitswitch clone dono/repo'));
     const url = /^(https?:|git@)/.test(spec) ? spec : `https://github.com/${spec.replace(/\.git$/, '')}.git`;
     const parsed = scanner.parseGithub(url);
     const list = await allAccounts();
     let account;
     if (opts.as) {
       account = list.find((a) => a.login.toLowerCase() === opts.as.toLowerCase());
-      if (!account) throw new CliError(`A conta ${opts.as} não está logada.`, 'notfound');
+      if (!account) throw new CliError(_t('A conta {0} não está logada.', opts.as), 'notfound');
     } else {
       const owner = parsed?.owner?.toLowerCase();
       account = list.find((a) => a.login.toLowerCase() === owner)
@@ -292,43 +300,43 @@ const run = {
     }
     const parent = opts.dir || account.folder || store.get('cloneDir') || path.join(os.homedir(), 'GitHub');
     const dest = path.join(parent, parsed?.repo || path.basename(url, '.git'));
-    if (fs.existsSync(dest)) throw new CliError(`Já existe ${dest}.`, 'usage');
+    if (fs.existsSync(dest)) throw new CliError(_t('Já existe {0}.', dest), 'usage');
     fs.mkdirSync(parent, { recursive: true });
     const creds = await accounts.credentials(account.login, overrides());
     await git.clone(url, dest, creds, progress).finally(endProgress);
     addRepo(dest, account.login);
-    print({ action: 'clone', account: account.login, path: dest, url }, (d) => `clonado em ${d.path} como ${d.account}`);
+    print({ action: 'clone', account: account.login, path: dest, url }, (d) => _t('clonado em {0} como {1}', d.path, d.account));
   },
 
   async repos({ opts }) {
     const repos = store.get('repos').filter((r) => !opts.account || r.account === opts.account);
-    print({ repos, active: store.get('activeAccount'), lastRepoByAccount: store.get('lastRepoByAccount') }, (d) => (d.repos.length ? d.repos.map((r) => `${(r.account || '-').padEnd(20)} ${r.path}`).join('\n') : 'nenhum repositório'));
+    print({ repos, active: store.get('activeAccount'), lastRepoByAccount: store.get('lastRepoByAccount') }, (d) => (d.repos.length ? d.repos.map((r) => `${(r.account || '-').padEnd(20)} ${r.path}`).join('\n') : _t('nenhum repositório')));
   },
 
   async use({ pos, opts }) {
     const login = pos[0];
-    if (!login) throw new CliError('Diga a conta: gitswitch use <login>');
+    if (!login) throw new CliError(_t('Diga a conta: gitswitch use <login>'));
     const list = await allAccounts();
     const a = list.find((x) => x.login.toLowerCase() === login.toLowerCase());
-    if (!a) throw new CliError(`A conta ${login} não está logada. Contas: ${list.map((x) => x.login).join(', ')}`, 'notfound');
+    if (!a) throw new CliError(_t('A conta {0} não está logada. Contas: {1}', login, list.map((x) => x.login).join(', ')), 'notfound');
     const repo = switchAccount(store, a.login, { keepRepo: Boolean(opts['keep-repo']) });
     if (store.get('syncGlobal')) await accounts.syncGlobal(a.login, overrides());
     print({
       active: a.login, repo, folder: store.get('accountDirs')[a.login] || null,
       identity: a.identity, syncedTerminal: Boolean(store.get('syncGlobal')),
-    }, (d) => [`conta ativa: ${d.active}`, d.repo ? `repositório: ${d.repo}` : 'nenhum repositório usado com essa conta ainda'].join('\n'));
+    }, (d) => [_t('conta ativa: {0}', d.active), d.repo ? _t('repositório: {0}', d.repo) : _t('nenhum repositório usado com essa conta ainda')].join('\n'));
   },
 
   async folder({ pos }) {
     const [login, dir] = pos;
-    if (!login) throw new CliError('Diga a conta: gitswitch folder <login> [caminho]');
+    if (!login) throw new CliError(_t('Diga a conta: gitswitch folder <login> [caminho]'));
     if (dir) {
       const abs = path.resolve(dir);
-      if (!fs.existsSync(abs)) throw new CliError(`A pasta ${abs} não existe.`, 'notfound');
+      if (!fs.existsSync(abs)) throw new CliError(_t('A pasta {0} não existe.', abs), 'notfound');
       store.set('accountDirs', { ...store.get('accountDirs'), [login]: abs });
     }
     const folder = store.get('accountDirs')[login] || null;
-    print({ account: login, folder }, (d) => d.folder || 'sem pasta definida');
+    print({ account: login, folder }, (d) => d.folder || _t('sem pasta definida'));
   },
 
   async detect({ opts }) {
@@ -353,7 +361,7 @@ const run = {
     }
     print({ folders, missing, added: Boolean(opts.add) }, (d) => [
       ...Object.entries(d.folders).map(([l, f]) => `${l.padEnd(20)} ${f || '(nenhuma pasta encontrada)'}`),
-      d.missing.length ? `${d.missing.length} repositório(s) fora do GitSwitch${d.added ? ' (adicionados)' : ' — use --add'}:` : 'todos os repositórios já estão no GitSwitch',
+      d.missing.length ? _t('{0} repositório(s) fora do GitSwitch{1}:', d.missing.length, d.added ? _t(' (adicionados)') : _t(' — use --add')) : _t('todos os repositórios já estão no GitSwitch'),
       ...d.missing.map((m) => `  ${m.account.padEnd(18)} ${m.path}`),
     ].join('\n'));
   },
@@ -364,41 +372,41 @@ const run = {
     const all = [...editors, ...clis, ...store.get('customApps')];
     const id = opts.app || store.get('openWith');
     const target = all.find((a) => a.id === id) || editors[0];
-    if (!target) throw new CliError(`App não encontrado. Disponíveis: ${all.map((a) => a.id).join(', ')}`, 'notfound');
+    if (!target) throw new CliError(_t('App não encontrado. Disponíveis: {0}', all.map((a) => a.id).join(', ')), 'notfound');
     await apps.launch(target, root);
-    print({ opened: root, app: target.id }, (d) => `abrindo ${d.opened} em ${target.name}`);
+    print({ opened: root, app: target.id }, (d) => _t('abrindo {0} em {1}', d.opened, target.name));
   },
 
   async install({ opts }) {
     const cli = await install.installCli();
     const skill = opts['no-skill'] ? null : install.installSkill();
     print({ cli, skill }, (d) => [
-      `comando instalado em ${d.cli.bin} (${d.cli.path === 'added' ? 'adicionado ao PATH: abra um terminal novo' : 'já estava no PATH'})`,
-      d.skill ? `skill para IA instalada em: ${d.skill.installed.join(', ')}` : '',
+      _t('comando instalado em {0} ({1})', d.cli.bin, d.cli.path === 'present' ? _t('já estava no PATH') : _t('adicionado ao PATH: abra um terminal novo')),
+      d.skill ? _t('skill para IA instalada em: {0}', d.skill.installed.join(', ')) : '',
     ].filter(Boolean).join('\n'));
   },
 
   async help({ pos }) {
     const name = pos[0];
-    if (name && !COMMANDS[name]) throw new CliError(`Comando desconhecido: ${name}`);
+    if (name && !COMMANDS[name]) throw new CliError(_t('Comando desconhecido: {0}', name));
     const list = name ? { [name]: COMMANDS[name] } : COMMANDS;
     print({
       commands: list,
-      json: 'Acrescente --json (ou GITSWITCH_JSON=1) para respostas em JSON com "ok".',
-      exitCodes: { 0: 'ok', 1: 'git/gh falhou', 2: 'uso errado', 3: 'autenticação ou permissão', 4: 'não encontrado' },
-      accountResolution: ['--as <login>', 'conta lembrada do repositório', 'dona do remote origin (ou da organização)', 'conta ativa do app'],
+      json: _t('Acrescente --json (ou GITSWITCH_JSON=1) para respostas em JSON com "ok".'),
+      exitCodes: { 0: 'ok', 1: _t('git/gh falhou'), 2: _t('uso errado'), 3: _t('autenticação ou permissão'), 4: _t('não encontrado') },
+      accountResolution: ['--as <login>', _t('conta lembrada do repositório'), _t('dona do remote origin (ou da organização)'), _t('conta ativa do app')],
     }, () => [
-      'gitswitch: o Git com a conta certa do GitHub, para você e para agentes de IA.',
+      _t('gitswitch: o Git com a conta certa do GitHub, para você e para agentes de IA.'),
       '',
       ...Object.values(list).map((c) => `  ${c.usage}\n      ${c.summary}`),
       '',
-      'Acrescente --json para respostas em JSON. Códigos de saída: 0 ok, 1 falhou, 2 uso, 3 autenticação, 4 não encontrado.',
+      _t('Acrescente --json para respostas em JSON. Códigos de saída: 0 ok, 1 falhou, 2 uso, 3 autenticação, 4 não encontrado.'),
     ].join('\n'));
   },
 };
 
 async function passthrough(tool, rest, opts, build) {
-  if (!rest || !rest.length) throw new CliError(`Diga o comando: gitswitch ${tool} -- <argumentos>`);
+  if (!rest || !rest.length) throw new CliError(_t('Diga o comando: gitswitch {0} -- <argumentos>', tool));
   const cwd = opts.C ? path.resolve(opts.C) : process.cwd();
   const who = await resolve(cwd, opts.as);
   const creds = await accounts.credentials(who.account.login, overrides());
@@ -437,7 +445,7 @@ async function main() {
     return print({ version }, (d) => d.version);
   }
   const fn = run[p.cmd];
-  if (!fn) throw new CliError(`Comando desconhecido: ${p.cmd}. Veja: gitswitch help`);
+  if (!fn) throw new CliError(_t('Comando desconhecido: {0}. Veja: gitswitch help', p.cmd));
   return fn(p);
 }
 

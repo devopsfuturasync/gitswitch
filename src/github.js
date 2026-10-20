@@ -1,3 +1,4 @@
+const { t: _t } = require('./i18n');
 const API = 'https://api.github.com';
 
 async function api(token, path, { method = 'GET', body } = {}) {
@@ -18,7 +19,7 @@ async function api(token, path, { method = 'GET', body } = {}) {
       const j = await res.json();
       detail = [j.message, ...(j.errors || []).map((e) => e.message || e.code)].filter(Boolean).join(': ');
     } catch { /* no JSON body */ }
-    const err = new Error(detail ? `GitHub: ${detail}` : `GitHub respondeu ${res.status} em ${path}`);
+    const err = new Error(detail ? `GitHub: ${detail}` : _t('GitHub respondeu {0} em {1}', res.status, path));
     err.status = res.status;
     throw err;
   }

@@ -1,3 +1,4 @@
+const { t: _t } = require('./i18n');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
@@ -41,7 +42,7 @@ const FRIENDLY = [
 function friendly(err) {
   const raw = err.output || err.message || '';
   const hit = FRIENDLY.find(([, re]) => re.test(raw));
-  const out = new Error(hit ? hit[2] : raw.split('\n').filter(Boolean).slice(-3).join('\n') || err.message);
+  const out = new Error(hit ? _t(hit[2]) : raw.split('\n').filter(Boolean).slice(-3).join('\n') || err.message);
   out.kind = hit?.[0] || 'git';
   out.detail = raw;
   out.exitCode = err.exitCode;
@@ -66,7 +67,8 @@ function progressParser(label, onProgress) {
     if (!last) return;
     const m = last.match(/^(.*?):\s+(\d+)%/);
     if (!m) return;
-    const step = PROGRESS_LABELS.find(([re]) => re.test(m[1]))?.[1] || m[1];
+    const known = PROGRESS_LABELS.find(([re]) => re.test(m[1]))?.[1];
+    const step = known ? _t(known) : m[1];
     onProgress({ text: `${label}: ${step} ${m[2]}%`, percent: Number(m[2]) });
   };
 }
@@ -269,7 +271,7 @@ async function stagePartial(repo, file, initial) {
   }
   const text = await rawDiff(repo, file, initial, false);
   if (file.hash && diffHash(text) !== file.hash) {
-    throw new Error(`${file.path} mudou depois que você escolheu as linhas. Abra o arquivo de novo e confira a seleção.`);
+    throw new Error(_t('{0} mudou depois que você escolheu as linhas. Abra o arquivo de novo e confira a seleção.', file.path));
   }
   const patch = partialPatch(text, new Set(file.lines), file, isNew);
   if (!patch) return;
@@ -550,7 +552,7 @@ async function cherryPick(repo, account, sha, branch, parents) {
 // --- squash: folds the newest commits down to (and including) sha into one.
 async function squash(repo, account, sha, message) {
   const st = await status(repo);
-  if (st.files.length) throw new Error('Faça commit, guarde (stash) ou descarte as alterações antes de juntar commits.');
+  if (st.files.length) throw new Error(_t('Faça commit, guarde (stash) ou descarte as alterações antes de juntar commits.'));
   const { code } = await git(repo, ['rev-parse', '-q', '--verify', `${sha}^`], null, { allowCodes: [0, 1] });
   if (code === 0) await git(repo, ['reset', '--soft', `${sha}^`]);
   else await git(repo, ['update-ref', '-d', 'HEAD']);
@@ -578,12 +580,12 @@ async function link(dir, url, account) {
   let top = null;
   try { top = await toplevel(dir); } catch { /* not a repository yet */ }
   if (top && path.normalize(top).toLowerCase() !== path.normalize(dir).toLowerCase()) {
-    throw new Error(`Essa pasta fica dentro de outro repositório (${top}). Escolha a pasta principal.`);
+    throw new Error(_t('Essa pasta fica dentro de outro repositório ({0}). Escolha a pasta principal.', top));
   }
   if (!top) await init(dir);
 
   const current = await remoteUrl(dir);
-  if (current && !sameRemote(current, url)) throw new Error(`Essa pasta já está ligada a outro repositório:\n${current}`);
+  if (current && !sameRemote(current, url)) throw new Error(_t('Essa pasta já está ligada a outro repositório:\n{0}', current));
   if (!current) await git(dir, ['remote', 'add', 'origin', url]);
   await git(dir, ['fetch', 'origin'], account);
 
@@ -609,7 +611,7 @@ async function link(dir, url, account) {
   }
 
   const st = await status(dir);
-  if (st.files.length) throw new Error('Essa pasta tem alterações sem commit. Faça commit ou descarte antes de juntar.');
+  if (st.files.length) throw new Error(_t('Essa pasta tem alterações sem commit. Faça commit ou descarte antes de juntar.'));
   const branch = st.branch;
   // Track GitHub's branch up front, so Push works after conflicts are settled too.
   if (branch === def) await git(dir, ['branch', '-u', `origin/${def}`]);

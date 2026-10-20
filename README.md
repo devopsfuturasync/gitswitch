@@ -29,6 +29,13 @@ gitswitch help --json                # lista de comandos para máquinas
 
 A conta é escolhida assim: `--as <login>` se você passar; senão, a última conta usada com o repositório; senão, a dona do `origin` (ou a conta da organização); senão, a conta ativa do app. Para instalar, use **Configurações → Terminal e IA**, ou rode `node src/cli.js install`. Isso põe o comando no PATH e instala a skill [src/ai-skill.md](src/ai-skill.md) em `~/.claude/skills` e `~/.agents/skills`.
 
+## Idiomas e sistemas (0.7)
+
+- **Idiomas**: português, inglês e espanhol. O app segue o idioma do sistema e cai para inglês quando o sistema usa outro idioma. Dá para escolher em **Configurações → Aparência → Idioma**. O `gitswitch` responde no idioma do sistema quando roda num terminal; em `--json` ou quando a saída vai para outro programa (scripts, agentes de IA), responde em inglês. A variável `GITSWITCH_LANG` (`pt`, `en`, `es`) força um idioma.
+- **Windows, macOS e Linux**: instalador `.exe` no Windows; `.dmg` e `.zip` (Intel e Apple Silicon) no macOS; AppImage e `.deb` no Linux. O GitHub CLI vem embutido nos três. O Git vem embutido no Windows e é o do sistema no macOS e no Linux.
+- **macOS**: o app tem só assinatura ad-hoc, sem certificado da Apple. Na primeira vez, abra com botão direito → **Abrir**. Sem assinatura com certificado, o macOS também não deixa o app se atualizar sozinho: baixe a versão nova na página de releases.
+- Os textos ficam em [src/locales](src/locales). A chave é o texto em português usado no código.
+
 ## Novidades da 0.6
 
 - **Sem dependências**: o Git (MinGit) e o GitHub CLI vêm junto, então não precisa instalar nada. Em **Configurações → Git e GitHub CLI** dá para usar os do sistema.
@@ -60,10 +67,10 @@ Gera `dist/GitSwitch-Setup-<versão>.exe`. Ele instala só para o seu usuário e
 
 As cópias instaladas procuram versões novas nas [releases deste repositório](https://github.com/devopsfuturasync/gitswitch/releases): 5 segundos depois de abrir e depois a cada 4 horas. Quando acham uma, baixam em segundo plano e mostram **Reiniciar e atualizar**. Se você só fechar o app, a versão nova é instalada do mesmo jeito.
 
-Para publicar uma versão nova, aumente `version` no `package.json` e rode:
+Para publicar uma versão nova, aumente `version` no `package.json`, faça commit e push, e rode:
 
 ```bash
 npm run release
 ```
 
-O script gera o instalador e cria a release no GitHub, usando o login do GitHub CLI da conta dona do repositório (`devopsfuturasync`).
+O script cria a tag `v<versão>` e a envia com a conta dona do repositório (`devopsfuturasync`). O GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) monta Windows, macOS e Linux e publica tudo numa release só. Para testar o build sem publicar, rode o workflow "Release" pela aba Actions com "publish" desligado: os instaladores ficam como artefatos. `npm run release:local` continua publicando só o Windows a partir desta máquina.
