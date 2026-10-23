@@ -13,35 +13,28 @@ on:
         type: boolean
         default: false
 
+# Read-only by default. Only the publish job can write to the repository, and
+# it runs in the protected "release" environment (required reviewer).
 permissions:
-  contents: write
-
-env:
-  PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+  contents: read
 
 jobs:
-  # One draft up front: parallel uploads that each create the release race
-  # and fail with 422.
-  draft:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Check the tag matches package.json
         if: github.event_name == 'push'
         run: |
           version=$(node -p "require('./package.json').version")
           test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME does not match package.json version $version"; exit 1; }
-      - name: Create the draft release
-        if: env.PUBLISH == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(node -p "require('./package.json').version")
-          gh release view "v$version" >/dev/null 2>&1 || \
-            gh release create "v$version" --draft --target "$GITHUB_SHA" --title "GitSwitch $version" --notes "GitSwitch $version"
 
+  # Builds never publish: they hand the installers and update files to the
+  # publish job as artifacts, so no build step holds a write token.
   build:
-    needs: draft
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +51,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -68,11 +63,9 @@ jobs:
       - name: Build
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder ${{ matrix.args }} --publish ${{ env.PUBLISH == 'true' && 'always' || 'never' }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
       - name: Keep the installers
-        if: env.PUBLISH != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gitswitch-${{ matrix.os }}
@@ -82,18 +75,36 @@ jobs:
             dist/*.zip
             dist/*.AppImage
             dist/*.deb
-            dist/*.yml
+            dist/*.blockmap
+            dist/latest*.yml
           if-no-files-found: error
 
+  # One job creates the release and uploads every file, so there is no
+  # parallel-upload race and no need for a draft before the builds.
   publish:
     needs: build
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gitswitch-*
+          path: dist
+          merge-multiple: true
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           version=$(node -p "require('./package.json').version")
+          ls -l dist
+          gh release view "v$version" >/dev/null 2>&1 || \
+            gh release create "v$version" --draft --target "$GITHUB_SHA" --title "GitSwitch $version" --notes "GitSwitch $version"
+          gh release upload "v$version" dist/* --clobber
           gh release edit "v$version" --draft=false --latest
